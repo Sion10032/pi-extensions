@@ -8,6 +8,8 @@
  * archive tag, and discover derived sessions by their parent chain.
  *
  * Moves are best effort: one failing companion never aborts the rest.
+ * `archiveSessionFile` and `restoreSessionFile` compose these primitives into
+ * the whole-tree moves the commands, tool and hooks use.
  */
 import {
 	appendFileSync,
@@ -28,10 +30,15 @@ import {
 
 import {
 	ARCHIVE_TAG,
+	archiveRoot,
+	isArchived,
 	readHeader,
 	sessionIdFromFile,
+	sessionsRoot,
 	twinPaths,
+	underRoot,
 } from "./paths.ts";
+import { clearPending, readIndex, writeIndex } from "./state.ts";
 
 function parentSessionId(metaFile: string): string | undefined {
 	try {
@@ -166,4 +173,115 @@ export function descendantFiles(dir: string, rootFile: string): string[] {
 		}
 	}
 	return result;
+}
+
+export interface ArchiveOptions {
+	name?: string;
+	now?: Date;
+}
+
+/** Timestamp suffix that stays valid on every filesystem (no colons). */
+function supersededStamp(now: Date): string {
+	return now.toISOString().replace(/[:.]/g, "-");
+}
+
+/**
+ * Move `source` onto `target`. A target that already exists is folded into the
+ * same session when it is only a continuation tail, otherwise it is renamed
+ * aside first: a stale copy is never overwritten, only preserved.
+ */
+function moveSessionFile(source: string, target: string, now: Date): string {
+	mkdirSync(dirname(target), { recursive: true });
+	if (existsSync(target)) {
+		let merged = false;
+		try {
+			merged = appendIfContinuation(source, target);
+		} catch {
+			merged = false;
+		}
+		if (merged) return target;
+		renameSync(target, `${target}.superseded-${supersededStamp(now)}`);
+	}
+	renameSync(source, target);
+	return target;
+}
+
+/**
+ * Move a live session file, its descendant sessions and their companions into
+ * the archive, recording every moved session in the index. Returns the
+ * archived paths, root first; a file outside the live sessions root is left
+ * alone. The root is mandatory (a failure throws so the caller can keep the
+ * request pending); a descendant that fails is skipped.
+ */
+export function archiveSessionFile(file: string, options: ArchiveOptions = {}): string[] {
+	if (underRoot(sessionsRoot(), file) === undefined) return [];
+	const source = resolve(file);
+	const dir = dirname(source);
+	const archivedDir = join(archiveRoot(), basename(dir));
+	const now = options.now ?? new Date();
+	const archivedAt = now.toISOString();
+	const index = readIndex();
+	const moved: string[] = [];
+	const sessionFiles = [source, ...descendantFiles(dir, source)];
+	for (const [position, sessionFile] of sessionFiles.entries()) {
+		const header = readHeader(sessionFile);
+		let archived: string;
+		try {
+			archived = moveSessionFile(sessionFile, join(archivedDir, basename(sessionFile)), now);
+		} catch (error) {
+			if (position === 0) throw error;
+			continue;
+		}
+		moved.push(archived);
+		moveCompanions(dir, archivedDir, sessionFile);
+		index[join(basename(dir), basename(sessionFile))] = {
+			name: position === 0 ? (options.name ?? "") : "",
+			cwd: header?.cwd ?? "",
+			archivedAt,
+			id: header?.id,
+		};
+	}
+	writeIndex(index);
+	clearPending(sessionIdFromFile(source));
+	return moved;
+}
+
+/**
+ * Move an archived session file, its descendant sessions and their companions
+ * back under the live sessions root and drop their index entries. Returns the
+ * live paths, root first; a file outside the archive is left alone. When the
+ * live copy of the root already exists nothing is restored and the archived
+ * copy stays intact; a descendant whose live copy exists is skipped.
+ */
+export function restoreSessionFile(file: string): string[] {
+	if (!isArchived(file)) return [];
+	const source = resolve(file);
+	const archivedDir = dirname(source);
+	const liveDir = join(sessionsRoot(), basename(archivedDir));
+	const index = readIndex();
+	const moved: string[] = [];
+	const sessionFiles = [source, ...descendantFiles(archivedDir, source)];
+	for (const [position, sessionFile] of sessionFiles.entries()) {
+		const target = join(liveDir, basename(sessionFile));
+		if (existsSync(target)) {
+			if (position === 0) return [];
+			continue;
+		}
+		try {
+			mkdirSync(liveDir, { recursive: true });
+			renameSync(sessionFile, target);
+		} catch (error) {
+			if (position === 0) throw error;
+			continue;
+		}
+		moved.push(target);
+		moveCompanions(archivedDir, liveDir, sessionFile);
+		stripLegacyTag(target);
+		for (const key of Object.keys(index)) {
+			if (resolve(join(archiveRoot(), key)) === sessionFile) delete index[key];
+		}
+	}
+	writeIndex(index);
+	for (const path of moved) clearPending(sessionIdFromFile(path));
+	return moved;
 }
