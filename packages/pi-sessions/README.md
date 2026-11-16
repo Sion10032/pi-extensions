@@ -232,6 +232,6 @@ nix develop -c env -u NODE_ENV npm install
 
 ## License
 
-MIT，见仓库根目录的 [`LICENSE`](../../LICENSE)。
+MIT，见 [`LICENSE`](LICENSE)。
 
-归档目录布局、伴生文件处理、尾部续写合并与旧标签剥除改编自 [`@clementprevot/pi-session-archive`](https://github.com/clementprevot/pi-session-archive)（MIT，Copyright (c) 2026 Clément Prévot），完整声明见 [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)。本项目与上游作者没有隶属或背书关系。
+归档目录布局、伴生文件处理、尾部续写合并与旧标签剥除改编自 [`@clementprevot/pi-session-archive`](https://github.com/clementprevot/pi-session-archive)（MIT，Copyright (c) 2026 Clément Prévot），完整声明见包内 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。本项目与上游作者没有隶属或背书关系。

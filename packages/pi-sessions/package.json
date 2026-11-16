@@ -6,7 +6,7 @@
 	"license": "MIT",
 	"type": "module",
 	"engines": { "node": ">=22.6" },
-	"files": ["src"],
+	"files": ["src", "THIRD_PARTY_NOTICES.md"],
 	"pi": { "extensions": ["./src/index.ts"] },
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
