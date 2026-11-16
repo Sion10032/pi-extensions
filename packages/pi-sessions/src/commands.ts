@@ -1,6 +1,6 @@
 /**
- * The `/sessions` command: load this folder's sessions, let the user pick one
- * and resume it.
+ * The `/sessions` command: load this folder's sessions, let the user pick one,
+ * resume it, and archive or unarchive a session from the picker.
  *
  * Picking uses the terminal picker (`picker.ts`) in TUI mode and a plain
  * `ctx.ui.select` list in every other mode. Resuming is shared by both paths:
@@ -8,17 +8,19 @@
  * session files from its own sessions root - and only then is the switch
  * requested.
  *
- * Archiving from inside the picker (`ctrl+a`) is wired by a later task, so the
- * placeholder callback below intentionally does nothing.
+ * Archiving moves a session and its whole subtree. The session pi is still
+ * writing cannot be moved, so archiving it only records a pending archive that
+ * the shutdown hook completes.
  */
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 
-import { restoreSessionFile } from "./archive.ts";
+import { archiveSessionFile, restoreSessionFile } from "./archive.ts";
 import {
 	displayTitle,
 	isArchived,
@@ -31,6 +33,7 @@ import {
 	filterRecords,
 	loadSessions,
 } from "./sessions.ts";
+import { setPending } from "./state.ts";
 import type {
 	ArchiveFilter,
 	SessionRecord,
@@ -60,6 +63,72 @@ export function formatOption(record: SessionRecord): string {
 	const cwd = info.cwd || UNKNOWN_CWD;
 	const label = `${displayTitle(info)} · ${relativeTime(record.archiveDate)} · ${cwd}`;
 	return record.archived ? `${label} [archived]` : label;
+}
+
+/**
+ * The context archive actions need. A `Pick` rather than the full command
+ * context, so the `archive_session` tool can hand in its own context, which
+ * shares these members without being an `ExtensionCommandContext`.
+ */
+export type SessionCtx = Pick<ExtensionCommandContext, "sessionManager" | "ui" | "cwd">;
+
+/**
+ * Archive a live session - or restore an archived one - together with its
+ * whole subtree. The session pi is still writing cannot be moved: archiving it
+ * only records a pending archive for shutdown, reported as `deferred`.
+ *
+ * Every failure is notified and turns into an empty result, so the picker
+ * keeps running and simply reloads the unchanged trees.
+ */
+export async function toggleArchive(
+	pi: ExtensionAPI,
+	ctx: SessionCtx,
+	record: SessionRecord,
+): Promise<{ moved: string[]; deferred: boolean }> {
+	try {
+		const currentFile = ctx.sessionManager.getSessionFile();
+		if (
+			!record.archived
+			&& currentFile !== undefined
+			&& resolve(record.info.path) === resolve(currentFile)
+		) {
+			deferArchive(pi, ctx);
+			return { moved: [], deferred: true };
+		}
+		if (record.archived) {
+			const moved = restoreSessionFile(record.info.path);
+			// Nothing moves when the live twin already exists; the archived copy
+			// stays put, so "Restored 0 sessions" would be misleading.
+			if (moved.length === 0) ctx.ui.notify("A live copy already exists", "warning");
+			else ctx.ui.notify(`Restored ${moved.length} sessions`, "info");
+			return { moved, deferred: false };
+		}
+		const moved = archiveSessionFile(record.info.path, { name: record.info.name });
+		const children = moved.length - 1;
+		const suffix = children > 0 ? ` (+${children} child sessions)` : "";
+		ctx.ui.notify(`Archived ${displayTitle(record.info)}${suffix}`, "info");
+		return { moved, deferred: false };
+	} catch (error) {
+		const action = record.archived ? "restore" : "archive";
+		ctx.ui.notify(`Failed to ${action} session: ${errorMessage(error)}`, "error");
+		return { moved: [], deferred: false };
+	}
+}
+
+/**
+ * Record an archive request for the session pi is running now; the shutdown
+ * hook moves the file once pi is done writing it. A session without a file or
+ * an id cannot be recorded and is reported instead.
+ */
+export function deferArchive(_pi: ExtensionAPI, ctx: SessionCtx): void {
+	const file = ctx.sessionManager.getSessionFile();
+	const id = ctx.sessionManager.getSessionId();
+	if (!file || !id) {
+		ctx.ui.notify("No current session to archive yet", "warning");
+		return;
+	}
+	setPending(id, { path: file, cwd: ctx.cwd, requestedAt: new Date().toISOString() });
+	ctx.ui.notify("Session will be archived when it closes", "info");
 }
 
 /**
@@ -115,6 +184,7 @@ function errorMessage(error: unknown): string {
 
 /** The terminal picker; resolves to the chosen record, or null when cancelled. */
 async function pickInTui(
+	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	records: SessionRecord[],
 	filter: ArchiveFilter | undefined,
@@ -129,8 +199,23 @@ async function pickInTui(
 			keybindings,
 			onResume: (record) => done(record),
 			onCancel: () => done(null),
-			// Archiving from the picker lands in a later task.
-			onToggleArchive: () => {},
+			onToggleArchive: (record) => {
+				void toggleArchive(pi, ctx, record)
+					.then((result) => {
+						// A deferred archive moves nothing until shutdown, so the rows
+						// are still accurate and need no reload.
+						if (result.deferred) return;
+						const scope = state.scope;
+						return loadSessions(scope, ctx.cwd).then((next) => {
+							// A reload for a scope the user already left must not
+							// replace the rows of the scope now on screen.
+							if (state.scope !== scope) return;
+							state.setRecords(next);
+							tui.requestRender();
+						});
+					})
+					.catch(() => ctx.ui.notify("Failed to reload sessions", "error"));
+			},
 			onReload: (scope) => {
 				void loadSessions(scope, ctx.cwd)
 					.then((next) => {
@@ -174,10 +259,11 @@ async function pickWithSelect(
 }
 
 /**
- * `/sessions [active|archived|all]`: browse and resume a session. The argument
- * only picks the starting archive filter; the picker can still change it.
+ * `/sessions [active|archived|all]`: browse, resume and archive sessions. The
+ * argument only picks the starting archive filter; the picker can still change
+ * it.
  */
-export async function runSessions(_pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
+export async function runSessions(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
 	const records = await loadSessions("current", ctx.cwd);
 	// The terminal picker stays reachable without sessions in this folder: `tab`
 	// switches to the `all` scope, which reloads sessions from everywhere.
@@ -187,7 +273,7 @@ export async function runSessions(_pi: ExtensionAPI, ctx: ExtensionCommandContex
 	}
 	const filter = parseFilterArg(args);
 	const chosen = ctx.mode === "tui"
-		? await pickInTui(ctx, records, filter)
+		? await pickInTui(pi, ctx, records, filter)
 		: await pickWithSelect(ctx, records, filter);
 	if (chosen === undefined || chosen === null) return;
 	await resume(ctx, chosen);
