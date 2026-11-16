@@ -182,14 +182,20 @@ export interface ArchiveOptions {
 	now?: Date;
 	/**
 	 * Session files that must not move: the session pi is still writing, or a
-	 * shutdown's target session. A protected file and everything below it stay
-	 * where they are, companions included.
+	 * shutdown's target session. A protected file inside the selected subtree
+	 * stays where it is, companions included, and so does everything below it.
+	 * A protected ancestor does not veto the move: the user explicitly selected
+	 * this subtree.
 	 */
 	protect?: readonly string[];
 }
 
 export interface RestoreOptions {
-	/** Live session files that must not move, e.g. the current session. */
+	/**
+	 * Live session files that must not move, e.g. the current session. As with
+	 * `ArchiveOptions.protect`, only protection inside the selected subtree
+	 * blocks a file.
+	 */
 	protect?: readonly string[];
 }
 
@@ -207,22 +213,28 @@ function protectedKeys(protect: readonly string[] | undefined): Set<string> {
 }
 
 /**
- * The files of a move that may actually move. Protected files are dropped,
- * and so are their descendants: moving a child out from under a session that
- * stays live would split the tree and leave the child pointing at a file that
- * is still being written.
+ * The files of a move that may actually move. `files` is the selected root
+ * followed by its discovered descendants. A protected file that lies inside
+ * that subtree is dropped together with its own descendants: sweeping them up
+ * would move the session pi is still writing, or the fork it is about to
+ * write. A protected ancestor - typically the current session while the user
+ * archives one of its children - blocks nothing: the root was selected
+ * explicitly, and a directly protected root is rejected before this filter
+ * runs.
  */
 function movableFiles(files: string[], dir: string, keys: ReadonlySet<string>): string[] {
 	if (keys.size === 0) return files;
+	const [root, ...descendants] = files;
+	const tree = new Set(descendants.map((file) => resolve(file)));
 	const blocked = new Set<string>();
 	for (const key of keys) {
-		if (dirname(key) !== dir) continue;
+		const resolved = resolve(key);
+		if (!tree.has(resolved)) continue;
+		blocked.add(resolved);
 		for (const child of descendantFiles(dir, key)) blocked.add(resolve(child));
 	}
-	return files.filter((file) => {
-		const resolved = resolve(file);
-		return !keys.has(resolved) && !blocked.has(resolved);
-	});
+	if (blocked.size === 0) return files;
+	return [root, ...descendants.filter((file) => !blocked.has(resolve(file)))];
 }
 
 /** Timestamp suffix that stays valid on every filesystem (no colons). */
@@ -258,9 +270,11 @@ function moveSessionFile(source: string, target: string, now: Date): string {
  * alone. The root is mandatory (a failure throws so the caller can keep the
  * request pending); a descendant that fails is skipped.
  *
- * A protected file - the session pi is writing, or the target of the shutdown
- * that is running - never moves, and neither do its descendants: pi would keep
- * appending to the old path and the session would vanish from `/resume`.
+ * A protected file inside the subtree being moved - the session pi is writing,
+ * or the target of the shutdown that is running - never moves, and neither do
+ * its descendants: pi would keep appending to the old path and the session
+ * would vanish from `/resume`. A protected ancestor does not block the move,
+ * so archiving a child of the live session still archives that child.
  */
 export function archiveSessionFile(file: string, options: ArchiveOptions = {}): string[] {
 	if (underRoot(sessionsRoot(), file) === undefined) return [];
@@ -303,7 +317,8 @@ export function archiveSessionFile(file: string, options: ArchiveOptions = {}): 
  * live paths, root first; a file outside the archive is left alone. When the
  * live copy of the root already exists - or the root is protected - nothing is
  * restored and the archived copy stays intact; a descendant whose live copy
- * exists is skipped.
+ * exists is skipped. A protected file inside the subtree is left in the
+ * archive, while a protected ancestor does not block the restore.
  */
 export function restoreSessionFile(file: string, options: RestoreOptions = {}): string[] {
 	if (!isArchived(file)) return [];

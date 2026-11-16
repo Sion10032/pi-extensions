@@ -133,6 +133,26 @@ test("a protected root moves nothing", () => {
 	assert.equal(existsSync(join(live, file(CHILD))), true);
 });
 
+test("an explicitly selected child of a protected session still archives", () => {
+	const parent = seedTree();
+	const child = join(live, file(CHILD));
+	const companion = join(live, file(CHILD).replace(".jsonl", ""));
+	mkdirSync(companion, { recursive: true });
+	writeFileSync(join(companion, "run"), "x");
+
+	// The user picked the child itself: protection keeps the live parent out of
+	// the move, but must not veto the explicitly selected subtree.
+	const moved = archiveSessionFile(child, { protect: [parent] });
+
+	const archivedDir = join(archiveRoot(), cwdDirName(CWD));
+	assert.deepEqual(moved.map((path) => path.split("/").pop()).sort(), [file(CHILD), file(GRAND)].sort());
+	assert.equal(existsSync(parent), true);
+	assert.equal(existsSync(child), false);
+	assert.equal(existsSync(join(archivedDir, file(GRAND))), true);
+	assert.equal(existsSync(join(archivedDir, file(CHILD).replace(".jsonl", ""), "run")), true);
+	assert.equal(existsSync(join(archiveRoot(), cwdDirName(CWD), file(ID))), false);
+});
+
 test("restoring never moves a protected live session", () => {
 	const parent = seedTree();
 	archiveSessionFile(parent);
