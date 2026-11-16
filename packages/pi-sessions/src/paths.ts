@@ -21,8 +21,14 @@ import {
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-/** Legacy marker some session names carry; stripped for display only. */
+/** Legacy marker some session names carry; stripped for display and on restore. */
 export const ARCHIVE_TAG = "[ARCHIVE] ";
+
+/** One or more leading archive markers. The old plugin wrote a bare `[ARCHIVE]` for unnamed sessions. */
+const LEADING_ARCHIVE_TAG = /^(?:\[ARCHIVE\]\s*)+/;
+
+/** C0 controls, DEL and C1 controls would break the one-line picker layout. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
 
 /** First line of a session JSONL file holds its header; 4KB is plenty. */
 const HEADER_READ_BYTES = 4096;
@@ -74,17 +80,36 @@ export function twinPaths(file: string): string[] {
 	return [abs];
 }
 
+/** Remove leading legacy archive markers and surrounding whitespace. */
+export function stripArchiveTag(name: string | undefined): string {
+	return (name ?? "").replace(LEADING_ARCHIVE_TAG, "").trim();
+}
+
+/** True when a name still starts with the legacy archive marker. */
+export function hasArchiveTag(name: string | undefined): boolean {
+	return LEADING_ARCHIVE_TAG.test(name ?? "");
+}
+
 /** Strip legacy archive tags; an empty result becomes `(unnamed)`. */
 export function cleanName(name: string | undefined): string {
-	const cleaned = (name ?? "").replaceAll(ARCHIVE_TAG, "").trim();
+	const cleaned = stripArchiveTag(name);
 	return cleaned || "(unnamed)";
+}
+
+/**
+ * Collapse a title to a single line: control characters become spaces and runs
+ * of whitespace collapse, so a message containing a newline or an escape
+ * sequence cannot break the picker layout.
+ */
+function singleLine(text: string): string {
+	return text.replace(CONTROL_CHARS, " ").replace(/\s+/g, " ").trim();
 }
 
 /** User-facing session title: the cleaned name, else the first message. */
 export function displayTitle(info: { name?: string; firstMessage: string }): string {
-	const named = cleanName(info.name);
-	if (named !== "(unnamed)") return named;
-	return info.firstMessage.trim() || "(unnamed)";
+	const named = singleLine(cleanName(info.name));
+	if (named !== "" && named !== "(unnamed)") return named;
+	return singleLine(info.firstMessage) || "(unnamed)";
 }
 
 /** Coarse age label, e.g. `just now`, `5m ago`, `3h ago`, `2d ago`. */

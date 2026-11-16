@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, test } from "node:test";
@@ -117,6 +117,23 @@ test("resolveResumeTarget prefers an existing live twin", () => {
 	const result = resolveResumeTarget(record(archived, true));
 	assert.equal(result.target, file);
 	assert.deepEqual(result.restored, []);
+});
+
+test("resolveResumeTarget never moves a protected file", () => {
+	const live = join(sessionsRoot(), cwdDirName(CWD));
+	mkdirSync(live, { recursive: true });
+	const file = join(live, `a_${ID}.jsonl`);
+	writeFileSync(file, `${header}\n`);
+	archiveSessionFile(file);
+	const archived = join(archiveRoot(), cwdDirName(CWD), `a_${ID}.jsonl`);
+
+	// The current session is the archived file itself: opening its archived
+	// copy must not move the file pi is still writing.
+	const result = resolveResumeTarget(record(archived, true), archived);
+
+	assert.deepEqual(result.restored, []);
+	assert.equal(existsSync(archived), true);
+	assert.equal(existsSync(file), false);
 });
 
 test("registers the sessions command", () => {

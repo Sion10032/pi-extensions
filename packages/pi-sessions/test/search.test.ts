@@ -41,6 +41,7 @@ test("hasName ignores missing, blank and bare legacy tags", () => {
 	assert.equal(hasName(record({}).info), false);
 	assert.equal(hasName(record({ name: "   " }).info), false);
 	assert.equal(hasName(record({ name: "[ARCHIVE] " }).info), false);
+	assert.equal(hasName(record({ name: "[ARCHIVE]" }).info), false);
 	assert.equal(hasName(record({ name: "[ARCHIVE] target" }).info), true);
 });
 

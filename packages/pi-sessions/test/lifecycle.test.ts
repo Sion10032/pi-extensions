@@ -11,6 +11,7 @@ import { readPending, setPending } from "../src/state.ts";
 
 const CWD = "/work/project";
 const ID = "01a0aaaa-0000-7000-8000-000000000001";
+const CHILD_ID = "01a0bbbb-0000-7000-8000-000000000002";
 const header = JSON.stringify({ type: "session", version: 3, id: ID, timestamp: "2026-01-01T00:00:00.000Z", cwd: CWD });
 
 type Handler = (...args: any[]) => unknown;
@@ -66,6 +67,8 @@ test("reload does not move the file", () => {
 	setPending(ID, { path: file, cwd: CWD, requestedAt: "2026-01-01T00:00:00.000Z" });
 	handlers.get("session_shutdown")!({ reason: "reload" }, ctx);
 	assert.equal(existsSync(file), true);
+	// The session comes right back, so the request stays armed.
+	assert.ok(readPending()[ID]);
 });
 
 test("shutdown clears pending when the file is already gone", () => {
@@ -77,13 +80,40 @@ test("shutdown clears pending when the file is already gone", () => {
 	assert.equal(readPending()[ID], undefined);
 });
 
-test("switching to an already-archived target does not move it again", () => {
+test("resuming the current file does not move it and keeps pending armed", () => {
 	const { pi, handlers } = fakePi();
 	piSessions(pi);
 	setPending(ID, { path: file, cwd: CWD, requestedAt: "2026-01-01T00:00:00.000Z" });
-	handlers.get("session_shutdown")!({ reason: "switch", targetSessionFile: file }, ctx);
+	handlers.get("session_shutdown")!({ reason: "resume", targetSessionFile: file }, ctx);
 	assert.equal(existsSync(file), true);
+	assert.ok(readPending()[ID]);
 });
+
+/** A derived session whose header points at `parent`. */
+function seedChild(parent: string): string {
+	const child = join(live, `b_${CHILD_ID}.jsonl`);
+	writeFileSync(child, `${JSON.stringify({ ...JSON.parse(header), id: CHILD_ID, parentSession: parent })}\n`);
+	return child;
+}
+
+for (const reason of ["fork", "resume"] as const) {
+	const label = reason === "fork" ? "forking" : "resuming";
+	test(`${label} into a derived session keeps the target live`, () => {
+		const { pi, handlers } = fakePi();
+		piSessions(pi);
+		const child = seedChild(file);
+		setPending(ID, { path: file, cwd: CWD, requestedAt: "2026-01-01T00:00:00.000Z" });
+
+		handlers.get("session_shutdown")!({ reason, targetSessionFile: child }, ctx);
+
+		// The pending session is archived, but pi is about to write the new child
+		// session: moving it too would leave a headerless file at its old path.
+		assert.equal(existsSync(file), false);
+		assert.equal(existsSync(join(archiveRoot(), cwdDirName(CWD), `a_${ID}.jsonl`)), true);
+		assert.equal(existsSync(child), true);
+		assert.equal(readPending()[ID], undefined);
+	});
+}
 
 test("session_start keeps pending armed for a live session", () => {
 	const { pi, handlers } = fakePi();

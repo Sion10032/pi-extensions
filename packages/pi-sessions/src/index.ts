@@ -43,7 +43,10 @@ function sessionStart(ctx: ExtensionContext): void {
  * Complete a deferred archive. A reload keeps the file where it is: pi is
  * about to reopen the same session, so moving it would lose the session the
  * user is in. A switch whose target is the current file does not move it
- * either. A file that is already archived or gone only needs its pending entry
+ * either, and a switch to a derived session - `/fork` and resuming a child
+ * both write the new session as a child of this one - protects that target:
+ * pi is about to append to it, so moving it would leave a headerless file.
+ * A file that is already archived or gone only needs its pending entry
  * dropped; a failure to move is notified and leaves the request pending.
  */
 function sessionShutdown(pi: ExtensionAPI, event: SessionShutdownEvent, ctx: ExtensionContext): void {
@@ -57,7 +60,10 @@ function sessionShutdown(pi: ExtensionAPI, event: SessionShutdownEvent, ctx: Ext
 		return;
 	}
 	try {
-		archiveSessionFile(file, { name: pi.getSessionName() });
+		archiveSessionFile(file, {
+			name: pi.getSessionName(),
+			protect: event.targetSessionFile === undefined ? [] : [event.targetSessionFile],
+		});
 	} catch (error) {
 		ctx.ui.notify(`Archive failed: ${errorMessage(error)}`, "error");
 	}

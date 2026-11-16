@@ -64,7 +64,6 @@ test("archiving the current session defers and records pending state", async () 
 });
 
 test("deferArchive writes pending for the current session", () => {
-	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-sessions-defer-"));
 	deferArchive(pi, ctx);
 	assert.ok(readPending()["current"]);
 });
@@ -95,4 +94,54 @@ test("restoring an archived session with a live twin warns and keeps the archive
 	assert.equal(result.deferred, false);
 	assert.equal(existsSync(archived), true);
 	assert.equal(notices.at(-1), "A live copy already exists");
+});
+
+test("archiving an ancestor keeps the current session and its companions live", async () => {
+	const parent = join(live, `a_${ID}.jsonl`);
+	const childId = "01a0aaaa-0000-7000-8000-000000000002";
+	const child = join(live, `b_${childId}.jsonl`);
+	writeFileSync(parent, `${header}\n`);
+	writeFileSync(child, `${JSON.stringify({ ...JSON.parse(header), id: childId, parentSession: parent })}\n`);
+	const companion = join(live, `b_${childId}`);
+	mkdirSync(companion, { recursive: true });
+	writeFileSync(join(companion, "run"), "x");
+	// The session pi is writing is a child of the session the user picked.
+	currentFile = child;
+
+	const result = await toggleArchive(pi, ctx, record(parent, false));
+
+	assert.deepEqual(result.moved, [join(archiveRoot(), cwdDirName(CWD), `a_${ID}.jsonl`)]);
+	assert.equal(existsSync(child), true);
+	assert.equal(existsSync(join(companion, "run")), true);
+	assert.match(notices.at(-1)!, /Archived hello/);
+});
+
+test("restoring the current session file is refused", async () => {
+	const archivedDir = join(archiveRoot(), cwdDirName(CWD));
+	mkdirSync(archivedDir, { recursive: true });
+	const archived = join(archivedDir, `a_${ID}.jsonl`);
+	writeFileSync(archived, `${header}\n`);
+	currentFile = archived;
+
+	const result = await toggleArchive(pi, ctx, record(archived, true));
+
+	assert.deepEqual(result.moved, []);
+	assert.equal(existsSync(archived), true);
+	assert.match(notices.at(-1)!, /current session cannot be moved/);
+});
+
+test("deferArchive warns for a session outside the sessions directory", () => {
+	const outside = join(mkdtempSync(join(tmpdir(), "pi-sessions-outside-")), "custom.jsonl");
+	writeFileSync(outside, `${header}\n`);
+	const outsideNotices: string[] = [];
+	const outsideCtx = {
+		ui: { notify: (message: string) => outsideNotices.push(message) },
+		sessionManager: { getSessionFile: () => outside, getSessionId: () => "outside" },
+		cwd: CWD,
+	} as unknown as ExtensionCommandContext;
+
+	deferArchive(pi, outsideCtx);
+
+	assert.match(outsideNotices.at(-1)!, /outside the sessions directory/);
+	assert.equal(readPending()["outside"], undefined);
 });

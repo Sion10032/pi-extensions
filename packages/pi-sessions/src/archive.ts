@@ -29,12 +29,13 @@ import {
 } from "node:path";
 
 import {
-	ARCHIVE_TAG,
 	archiveRoot,
+	hasArchiveTag,
 	isArchived,
 	readHeader,
 	sessionIdFromFile,
 	sessionsRoot,
+	stripArchiveTag,
 	twinPaths,
 	underRoot,
 } from "./paths.ts";
@@ -118,10 +119,11 @@ export function appendIfContinuation(fragment: string, archived: string): boolea
 }
 
 /**
- * Strip the [ARCHIVE] tag from the last session_info name, editing the file
- * in place (temp file + rename so a crash cannot truncate it). Restoring
- * needs this: a restored file that keeps the tag would be re-archived on its
- * next close by the self-heal logic. Best effort; the move already succeeded.
+ * Strip one or more leading [ARCHIVE] tags from the last session_info name,
+ * editing the file in place (temp file + rename so a crash cannot truncate
+ * it). Restoring needs this: a restored file that keeps the tag would be
+ * re-archived on its next close by the self-heal logic. Names without the tag
+ * are left byte for byte alone. Best effort; the move already succeeded.
  */
 export function stripLegacyTag(file: string): void {
 	try {
@@ -132,8 +134,8 @@ export function stripLegacyTag(file: string): void {
 			const match = line.match(/"name":"((?:[^"\\]|\\.)*)"/);
 			if (!match) return;
 			const decoded = JSON.parse(`"${match[1]}"`);
-			if (!decoded.startsWith(ARCHIVE_TAG)) return;
-			const stripped = JSON.stringify(decoded.slice(ARCHIVE_TAG.length)).slice(1, -1);
+			if (!hasArchiveTag(decoded)) return;
+			const stripped = JSON.stringify(stripArchiveTag(decoded)).slice(1, -1);
 			lines[i] = line.replace(`"name":"${match[1]}"`, `"name":"${stripped}"`);
 			const tmp = `${file}.pi-sessions-tmp`;
 			writeFileSync(tmp, lines.join("\n"));
@@ -178,6 +180,49 @@ export function descendantFiles(dir: string, rootFile: string): string[] {
 export interface ArchiveOptions {
 	name?: string;
 	now?: Date;
+	/**
+	 * Session files that must not move: the session pi is still writing, or a
+	 * shutdown's target session. A protected file and everything below it stay
+	 * where they are, companions included.
+	 */
+	protect?: readonly string[];
+}
+
+export interface RestoreOptions {
+	/** Live session files that must not move, e.g. the current session. */
+	protect?: readonly string[];
+}
+
+/**
+ * Resolved keys of the files a move must leave alone, twins included: a
+ * protected live file can be targeted through its archived copy and vice
+ * versa, and either path names the same session.
+ */
+function protectedKeys(protect: readonly string[] | undefined): Set<string> {
+	const keys = new Set<string>();
+	for (const path of protect ?? []) {
+		for (const twin of twinPaths(path)) keys.add(resolve(twin));
+	}
+	return keys;
+}
+
+/**
+ * The files of a move that may actually move. Protected files are dropped,
+ * and so are their descendants: moving a child out from under a session that
+ * stays live would split the tree and leave the child pointing at a file that
+ * is still being written.
+ */
+function movableFiles(files: string[], dir: string, keys: ReadonlySet<string>): string[] {
+	if (keys.size === 0) return files;
+	const blocked = new Set<string>();
+	for (const key of keys) {
+		if (dirname(key) !== dir) continue;
+		for (const child of descendantFiles(dir, key)) blocked.add(resolve(child));
+	}
+	return files.filter((file) => {
+		const resolved = resolve(file);
+		return !keys.has(resolved) && !blocked.has(resolved);
+	});
 }
 
 /** Timestamp suffix that stays valid on every filesystem (no colons). */
@@ -212,17 +257,23 @@ function moveSessionFile(source: string, target: string, now: Date): string {
  * archived paths, root first; a file outside the live sessions root is left
  * alone. The root is mandatory (a failure throws so the caller can keep the
  * request pending); a descendant that fails is skipped.
+ *
+ * A protected file - the session pi is writing, or the target of the shutdown
+ * that is running - never moves, and neither do its descendants: pi would keep
+ * appending to the old path and the session would vanish from `/resume`.
  */
 export function archiveSessionFile(file: string, options: ArchiveOptions = {}): string[] {
 	if (underRoot(sessionsRoot(), file) === undefined) return [];
 	const source = resolve(file);
+	const protect = protectedKeys(options.protect);
+	if (protect.has(source)) return [];
 	const dir = dirname(source);
 	const archivedDir = join(archiveRoot(), basename(dir));
 	const now = options.now ?? new Date();
 	const archivedAt = now.toISOString();
 	const index = readIndex();
 	const moved: string[] = [];
-	const sessionFiles = [source, ...descendantFiles(dir, source)];
+	const sessionFiles = movableFiles([source, ...descendantFiles(dir, source)], dir, protect);
 	for (const [position, sessionFile] of sessionFiles.entries()) {
 		const header = readHeader(sessionFile);
 		let archived: string;
@@ -250,17 +301,20 @@ export function archiveSessionFile(file: string, options: ArchiveOptions = {}): 
  * Move an archived session file, its descendant sessions and their companions
  * back under the live sessions root and drop their index entries. Returns the
  * live paths, root first; a file outside the archive is left alone. When the
- * live copy of the root already exists nothing is restored and the archived
- * copy stays intact; a descendant whose live copy exists is skipped.
+ * live copy of the root already exists - or the root is protected - nothing is
+ * restored and the archived copy stays intact; a descendant whose live copy
+ * exists is skipped.
  */
-export function restoreSessionFile(file: string): string[] {
+export function restoreSessionFile(file: string, options: RestoreOptions = {}): string[] {
 	if (!isArchived(file)) return [];
 	const source = resolve(file);
+	const protect = protectedKeys(options.protect);
+	if (protect.has(source)) return [];
 	const archivedDir = dirname(source);
 	const liveDir = join(sessionsRoot(), basename(archivedDir));
 	const index = readIndex();
 	const moved: string[] = [];
-	const sessionFiles = [source, ...descendantFiles(archivedDir, source)];
+	const sessionFiles = movableFiles([source, ...descendantFiles(archivedDir, source)], archivedDir, protect);
 	for (const [position, sessionFile] of sessionFiles.entries()) {
 		const target = join(liveDir, basename(sessionFile));
 		if (existsSync(target)) {

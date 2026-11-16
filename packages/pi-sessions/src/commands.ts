@@ -25,7 +25,9 @@ import {
 	displayTitle,
 	isArchived,
 	relativeTime,
+	sessionsRoot,
 	twinPaths,
+	underRoot,
 } from "./paths.ts";
 import { PickerState } from "./picker-state.ts";
 import { SessionPicker } from "./picker.ts";
@@ -75,7 +77,9 @@ export type SessionCtx = Pick<ExtensionCommandContext, "sessionManager" | "ui" |
 /**
  * Archive a live session - or restore an archived one - together with its
  * whole subtree. The session pi is still writing cannot be moved: archiving it
- * only records a pending archive for shutdown, reported as `deferred`.
+ * only records a pending archive for shutdown, reported as `deferred`. It is
+ * passed as `protect` to both moves, so a selected ancestor is archived
+ * without taking the live session down with it.
  *
  * Every failure is notified and turns into an empty result, so the picker
  * keeps running and simply reloads the unchanged trees.
@@ -87,6 +91,7 @@ export async function toggleArchive(
 ): Promise<{ moved: string[]; deferred: boolean }> {
 	try {
 		const currentFile = ctx.sessionManager.getSessionFile();
+		const protect = currentFile === undefined ? [] : [currentFile];
 		if (
 			!record.archived
 			&& currentFile !== undefined
@@ -96,14 +101,24 @@ export async function toggleArchive(
 			return { moved: [], deferred: true };
 		}
 		if (record.archived) {
-			const moved = restoreSessionFile(record.info.path);
+			if (currentFile !== undefined && resolve(record.info.path) === resolve(currentFile)) {
+				ctx.ui.notify("The current session cannot be moved", "warning");
+				return { moved: [], deferred: false };
+			}
+			const moved = restoreSessionFile(record.info.path, { protect });
 			// Nothing moves when the live twin already exists; the archived copy
 			// stays put, so "Restored 0 sessions" would be misleading.
 			if (moved.length === 0) ctx.ui.notify("A live copy already exists", "warning");
 			else ctx.ui.notify(`Restored ${moved.length} sessions`, "info");
 			return { moved, deferred: false };
 		}
-		const moved = archiveSessionFile(record.info.path, { name: record.info.name });
+		const moved = archiveSessionFile(record.info.path, { name: record.info.name, protect });
+		if (moved.length === 0) {
+			// Only reachable for a stale record or a file outside `sessions/`; the
+			// current session takes the deferred branch above.
+			ctx.ui.notify("Nothing was archived", "warning");
+			return { moved, deferred: false };
+		}
 		const children = moved.length - 1;
 		const suffix = children > 0 ? ` (+${children} child sessions)` : "";
 		ctx.ui.notify(`Archived ${displayTitle(record.info)}${suffix}`, "info");
@@ -118,13 +133,19 @@ export async function toggleArchive(
 /**
  * Record an archive request for the session pi is running now; the shutdown
  * hook moves the file once pi is done writing it. A session without a file or
- * an id cannot be recorded and is reported instead.
+ * an id cannot be recorded and is reported instead, and so is a session whose
+ * file lives outside `sessions/` (a custom `--session-dir`): the archive move
+ * could never run for it, so arming a pending entry would only mislead.
  */
 export function deferArchive(_pi: ExtensionAPI, ctx: SessionCtx): void {
 	const file = ctx.sessionManager.getSessionFile();
 	const id = ctx.sessionManager.getSessionId();
 	if (!file || !id) {
 		ctx.ui.notify("No current session to archive yet", "warning");
+		return;
+	}
+	if (underRoot(sessionsRoot(), file) === undefined) {
+		ctx.ui.notify("This session lives outside the sessions directory and cannot be archived", "warning");
 		return;
 	}
 	setPending(id, { path: file, cwd: ctx.cwd, requestedAt: new Date().toISOString() });
@@ -137,15 +158,23 @@ export function deferArchive(_pi: ExtensionAPI, ctx: SessionCtx): void {
  * A live session resumes in place. An archived one has to go back under the
  * live sessions root first: when its twin is already there (pi kept writing to
  * the live path after the archive) that copy wins and nothing moves; otherwise
- * the whole archive subtree is restored. When the restore moved nothing and
- * the live path still does not exist, `target` is that missing live path so the
- * caller can warn instead of switching to a file that is not there.
+ * the whole archive subtree is restored. `protect` names the session pi is
+ * still writing, so selecting its archived copy never moves that file. When
+ * the restore moved nothing and the live path still does not exist, `target`
+ * is that missing live path so the caller can warn instead of switching to a
+ * file that is not there.
  */
-export function resolveResumeTarget(record: SessionRecord): { target: string; restored: string[] } {
+export function resolveResumeTarget(
+	record: SessionRecord,
+	protect?: string,
+): { target: string; restored: string[] } {
 	if (!record.archived) return { target: record.info.path, restored: [] };
 	const live = twinPaths(record.info.path).find((path) => !isArchived(path)) ?? record.info.path;
 	if (existsSync(live)) return { target: live, restored: [] };
-	return { target: live, restored: restoreSessionFile(record.info.path) };
+	return {
+		target: live,
+		restored: restoreSessionFile(record.info.path, protect === undefined ? {} : { protect: [protect] }),
+	};
 }
 
 /**
@@ -159,7 +188,9 @@ async function resume(ctx: ExtensionCommandContext, record: SessionRecord): Prom
 	let target: string;
 	let restored: string[];
 	try {
-		({ target, restored } = resolveResumeTarget(record));
+		// The session pi is writing stays where it is even when its archived
+		// copy is the record the user picked.
+		({ target, restored } = resolveResumeTarget(record, ctx.sessionManager.getSessionFile()));
 	} catch (error) {
 		ctx.ui.notify(`Failed to restore session: ${errorMessage(error)}`, "error");
 		return;

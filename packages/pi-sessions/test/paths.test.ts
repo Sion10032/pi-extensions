@@ -6,7 +6,7 @@ import { beforeEach, test } from "node:test";
 
 import {
 	cleanName, cwdDirName, displayTitle, isArchived, readHeader,
-	relativeTime, sessionIdFromFile, twinPaths,
+	relativeTime, sessionIdFromFile, stripArchiveTag, twinPaths,
 } from "../src/paths.ts";
 
 beforeEach(() => {
@@ -37,6 +37,26 @@ test("cleanName strips legacy tags and displayTitle falls back to firstMessage",
 	assert.equal(cleanName(undefined), "(unnamed)");
 	assert.equal(displayTitle({ name: "[ARCHIVE] x", firstMessage: "hi" }), "x");
 	assert.equal(displayTitle({ name: "", firstMessage: "hello" }), "hello");
+});
+
+test("a bare legacy [ARCHIVE] tag is stripped everywhere", () => {
+	// The old plugin wrote exactly `[ARCHIVE]`, with no trailing space, for
+	// unnamed sessions; it must not read as a real name.
+	assert.equal(stripArchiveTag("[ARCHIVE]"), "");
+	assert.equal(cleanName("[ARCHIVE]"), "(unnamed)");
+	assert.equal(displayTitle({ name: "[ARCHIVE]", firstMessage: "real work" }), "real work");
+	assert.equal(cleanName("[ARCHIVE][ARCHIVE] x"), "x");
+	assert.equal(cleanName("[ARCHIVE] \t[ARCHIVE] keep"), "keep");
+	// Only leading markers are legacy; a tag inside a real name is left alone.
+	assert.equal(cleanName("work [ARCHIVE]"), "work [ARCHIVE]");
+});
+
+test("displayTitle collapses control characters into one line", () => {
+	assert.equal(displayTitle({ firstMessage: "first\nsecond\u001b[31mred" }), "first second [31mred");
+	assert.equal(displayTitle({ name: "tab\there", firstMessage: "x" }), "tab here");
+	assert.equal(displayTitle({ firstMessage: "\n\t\u0007" }), "(unnamed)");
+	const title = displayTitle({ firstMessage: "a\nb\u0007\u009b" });
+	assert.doesNotMatch(title, /[\u0000-\u001f\u007f-\u009f]/);
 });
 
 test("sessionIdFromFile returns the uuid suffix", () => {
