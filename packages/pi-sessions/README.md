@@ -52,7 +52,7 @@ pi -e ./packages/pi-sessions
 | `Restore only` | 在归档行上按 `ctrl+a` |
 | `Resume, keep archived` | 不再提供：恢复后再归档即可 |
 
-在非 TUI 模式（例如没有自定义组件的界面）下，`/sessions` 退化为 `ctx.ui.select` 的扁平编号列表，只支持恢复；归档请用 `/archive` 或 `archive_session` 工具。
+在非 TUI 模式（例如没有自定义组件的界面）下，`/sessions` 退化为 `ctx.ui.select` 的扁平编号列表，只支持恢复；归档请用 `/archive` 或 `archive_session` 工具。那里没有 `ctrl+t`，所以列表默认同时显示活跃与归档会话（归档行带 `[archived]` 标记）；用 `/sessions active` 或 `/sessions archived` 可以只看其中一种。
 
 ## `/sessions` 键位
 
@@ -82,12 +82,12 @@ pi -e ./packages/pi-sessions
 
 **物理移动。** 归档把 `<agent>/sessions/<cwd-slug>/x.jsonl` 移到 `<agent>/sessions-archive/<cwd-slug>/x.jsonl`，取消归档做反向移动。归档状态只由目录位置推导，不写进会话文件，也不依赖索引。
 
-**整棵子树。** 递归按会话 header 里的 `parentSession` 进行：父会话所在目录中，凡是 `parentSession` 指向该会话或其后代的 `.jsonl`，都属于这棵子树。pi 在文件格式上无法区分“子代理会话”和“`/fork` 派生的会话”，两者一律当作派生会话一起归档，这正是为了避免在原生 `/resume` 里留下孤儿根节点。恢复同样整棵移回；只恢复某个子会话时，父会话仍留在归档里，树形视图会按“孪生路径”继续把它挂在归档父节点下。
+**整棵子树。** 递归按会话 header 里的 `parentSession` 进行：父会话所在目录中，凡是 `parentSession` 指向该会话或其后代的 `.jsonl`，都属于这棵子树。pi 在文件格式上无法区分“子代理会话”和“`/fork` 派生的会话”，两者一律当作派生会话一起归档，这正是为了避免在原生 `/resume` 里留下孤儿根节点。恢复同样整棵移回；只恢复某个子会话时，父会话仍留在归档里，树形视图会按“孪生路径”继续把它挂在归档父节点下。**正在写入的会话除外**：当前会话的文件，以及它自己的派生会话，永远不随着祖先会话的归档而移动（连同伴生文件一起留在原地），否则 pi 会继续往旧路径写，会话就从 `/resume` 里消失了。
 
 **当前会话延迟归档。** pi 还在写当前会话的文件，移动它会丢内容，因此：
 
 - `/archive`、`archive_session` 工具、picker 里对当前会话按 `ctrl+a`，都只往 `<agent>/pi-sessions-state.json` 的 `pendingArchive[<sessionId>]` 写一条请求，并提示 `Session will be archived when it closes`。
-- 真正移动发生在 `session_shutdown`：退出 pi、`/new`、切换到别的会话、`/fork` 都会触发；`/reload` 不移动（会话马上回来），切换目标恰好是同一个会话文件也不移动。文件已归档或已不存在时只清掉请求；移动失败会通知错误并保留请求，便于下次重试。
+- 真正移动发生在 `session_shutdown`：退出 pi、`/new`、切换到别的会话、`/fork` 都会触发；`/reload` 不移动（会话马上回来），切换目标恰好是同一个会话文件也不移动。切换或 `/fork` 的目标是当前会话的派生会话时，那个目标文件同样不移动（pi 正要继续写它），只移动当前会话本身。文件已归档或已不存在时只清掉请求；移动失败会通知错误并保留请求，便于下次重试。
 - 移动成功后清掉请求。下次启动时若请求还在、而文件仍在活跃树，会继续武装（崩溃自愈）；若文件已在归档树，则丢弃请求。
 
 **目标文件已存在。** 归档时若归档位置已有同名文件，先判断它是否只是“尾巴”（没有 session header，且条目通过 `parentId` 接到归档副本上）：是则把尾巴追加到归档副本并删除；否则把旧文件改名成 `<file>.superseded-<timestamp>` 保留，绝不覆盖。
@@ -142,7 +142,7 @@ pi -e ./packages/pi-sessions
 | `archivedAt` | string | ISO 时间戳，`/sessions` 用它显示归档时间 |
 | `id` | string? | header 里的会话 id，可选（旧数据可能没有） |
 
-`/sessions` 只用到 `archivedAt`，缺失或索引损坏时回退到文件 mtime；`name`、`cwd`、`id` 仅作记录（标题始终取自会话文件本身）。
+`/sessions` 只用到 `archivedAt`，缺失或索引损坏时回退到 `SessionInfo.modified`（最后消息时间）；`name`、`cwd`、`id` 仅作记录（标题始终取自会话文件本身）。
 
 `pi-sessions-state.json` 只保存延迟归档请求：
 
@@ -160,7 +160,7 @@ pi -e ./packages/pi-sessions
 
 ## 限制
 
-- **自定义会话目录不参与**：用 `--session-dir`、`PI_CODING_AGENT_SESSION_DIR` 或 `sessionDir` 设置把会话放到 `<agent>/sessions/` 之外的，不会出现在 `/sessions`，也不能被归档或恢复（原生 `/resume` 仍可见）。归档根目录始终是 `<agent>/sessions-archive/`。
+- **自定义会话目录不参与**：用 `--session-dir`、`PI_CODING_AGENT_SESSION_DIR` 或 `sessionDir` 设置把会话放到 `<agent>/sessions/` 之外的，不会出现在 `/sessions`，也不能被归档或恢复（原生 `/resume` 仍可见）；`/archive` 与 `archive_session` 工具会提示该会话无法归档，不会留下永远执行不了的延迟请求。归档根目录始终是 `<agent>/sessions-archive/`。
 - **跨目录派生会话不会递归带走**：递归只扫描父会话所在目录的 `*.jsonl`。若子代理会话写到了别的工作目录，它不会被一起归档，会继续以孤儿根节点出现在原生 `/resume` 里。
 - **另一个 pi 实例正在使用的会话不要归档**：插件不检测会话是否被其他实例占用。归档一个正在被写入的会话可能丢掉尚未落盘的内容。
 - **多实例并发写**：`index.json` 与 `pi-sessions-state.json` 都是读-改-写加原子替换，并发时是 last-write-wins，后写的一方会覆盖先写条目的修改。同一时段最好只用一实例执行归档。
@@ -181,9 +181,9 @@ pi -e ./packages/pi-sessions
 
    若当初是用本地路径或 git 来源安装的，把来源换成当初写入设置的那一个。
 
-2. **旧归档无需转换**：目录布局相同（都是 `sessions-archive/<cwd-slug>/`），`index.json` 字段兼容；新插件只读取 `archivedAt`，缺字段或损坏时回退到文件 mtime。
-3. **旧标签展示时清理**：旧插件给未命名会话写过 `[ARCHIVE] ` 前缀名称。新插件展示时会去掉名称里的该标签，结果为空则显示首条消息（在“只看命名会话”过滤下，这类只剩标签的会话被视为未命名）。
-4. **恢复时剥除标签**：恢复归档会话时，如果文件里最后一个 `session_info` 的名称以 `[ARCHIVE] ` 开头，会把前缀去掉后再写回（临时文件 + rename），免得下次关闭又被当成旧归档重复处理。
+2. **旧归档无需转换**：目录布局相同（都是 `sessions-archive/<cwd-slug>/`），`index.json` 字段兼容；新插件只读取 `archivedAt`，缺字段或损坏时回退到 `SessionInfo.modified`（最后消息时间）。
+3. **旧标签展示时清理**：旧插件给未命名会话写过 `[ARCHIVE] ` 前缀名称，甚至只写一个裸的 `[ARCHIVE]`。新插件展示时会去掉名称开头的一个或多个 `[ARCHIVE]` 标签，结果为空则显示首条消息（在“只看命名会话”过滤下，这类只剩标签的会话被视为未命名）。
+4. **恢复时剥除标签**：恢复归档会话时，如果文件里最后一个 `session_info` 的名称以 `[ARCHIVE]` 开头（可带空白、可重复），会把开头这些标签去掉后再写回（临时文件 + rename），免得下次关闭又被当成旧归档重复处理；没有标签的名称保持原样。
 5. **旧插件已打标签但未移动的会话**：这些文件仍留在活跃树里，新插件不会因为看到标签就把它们当已归档。请在 `/sessions` 里对它们重新归档一次（`ctrl+a`）。
 6. **命令兼容**：`archive_session` 工具名与 `/archive` 命令保持不变，agent 侧提示词无需修改；`/archives` 不再存在，改用 `/sessions`。
 
