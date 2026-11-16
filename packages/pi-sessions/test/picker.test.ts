@@ -20,11 +20,11 @@ const theme = { fg: (_c: string, s: string) => s, bg: (_c: string, s: string) =>
 const tui = { requestRender() {} } as unknown as TUI;
 const kb = { matches: (data: string, action: string) => ({ "tui.select.confirm": "\r", "tui.select.cancel": "\u001b", "tui.select.up": "\u001b[A", "tui.select.down": "\u001b[B", "tui.select.pageUp": "\u001b[5~", "tui.select.pageDown": "\u001b[6~", "tui.input.tab": "\t", "app.session.toggleSort": "\u0013", "app.session.toggleNamedFilter": "\u000e", "app.session.togglePath": "\u0010" } as Record<string, string>)[action] === data } as unknown as KeybindingsManager;
 
-function makePicker(records: SessionRecord[], current?: string) {
+function makePicker(records: SessionRecord[], current?: string, pickerTheme: Theme = theme) {
 	const calls: string[] = [];
 	const state = new PickerState(records, current, "/work");
 	const picker = new SessionPicker({
-		state, theme, tui, keybindings: kb,
+		state, theme: pickerTheme, tui, keybindings: kb,
 		onResume: (r) => calls.push(`resume:${r.info.path}`),
 		onToggleArchive: (r) => calls.push(`toggle:${r.info.path}`),
 		onCancel: () => calls.push("cancel"),
@@ -75,6 +75,22 @@ test("ctrl+a on an archived session toggles immediately", () => {
 	picker.handleInput("\u0014"); // archive filter -> archived
 	picker.handleInput("\u0001");
 	assert.deepEqual(calls, ["toggle:/w/c.jsonl"]);
+});
+
+test("the archived marker is rendered dim", () => {
+	const dimCalls: string[] = [];
+	const spyTheme = {
+		fg: (color: string, text: string) => {
+			if (color === "dim") dimCalls.push(text);
+			return text;
+		},
+		bg: (_c: string, s: string) => s,
+		bold: (s: string) => s,
+	} as unknown as Theme;
+	const { picker } = makePicker([archived], undefined, spyTheme);
+	picker.handleInput("\u0014"); // archive filter -> archived
+	picker.render(80);
+	assert.ok(dimCalls.some((text) => text.includes("[archived]")));
 });
 
 test("esc cancels", () => {

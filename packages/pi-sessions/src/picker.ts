@@ -182,7 +182,6 @@ export class SessionPicker implements Component {
 			const delta = event.wheelDelta ?? 0;
 			if (delta === 0) return undefined;
 			this.props.state.move(delta);
-			this.props.tui.requestRender();
 			return { handled: true, render: true };
 		}
 		if ((event.type === "press" || event.type === "click") && event.button === "left") {
@@ -190,7 +189,6 @@ export class SessionPicker implements Component {
 			if (offset < 0 || offset >= this.visibleRows.length) return undefined;
 			if (this.selectedVisibleIndex < 0) return undefined;
 			this.props.state.move(offset - this.selectedVisibleIndex);
-			this.props.tui.requestRender();
 			return { handled: true, render: true };
 		}
 		return undefined;
@@ -291,7 +289,7 @@ export class SessionPicker implements Component {
 		const { info } = row.record;
 		let label = displayTitle(info);
 		if (row.descendantCount > 0) label += ` ↳${row.descendantCount}`;
-		if (row.record.archived) label += " [archived]";
+		if (row.record.archived) label += theme.fg("dim", " [archived]");
 		if (state.isCurrent(row.record)) label = theme.fg("accent", label);
 		if (selected) label = theme.bold(label);
 
