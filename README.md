@@ -31,6 +31,11 @@ npm run typecheck # 类型检查
 | --- | --- |
 | [`packages/pi-sessions`](packages/pi-sessions) | 浏览、归档、恢复并继续 pi session（包括其子 agent session） |
 
+## 文档
+
+- [`packages/pi-sessions/README.md`](packages/pi-sessions/README.md)：功能、`/sessions` 键位、归档布局、限制、迁移与开发
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)：第三方来源与许可证
+
 ## License
 
-MIT
+MIT，见 [`LICENSE`](LICENSE)。
