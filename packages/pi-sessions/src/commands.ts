@@ -82,17 +82,35 @@ export function resolveResumeTarget(record: SessionRecord): { target: string; re
 /**
  * Switch to `record`, restoring it first when it is archived. A missing file
  * is reported instead: pi cannot open a session that is not there, and the
- * picker may be showing a record whose file was moved behind its back.
+ * picker may be showing a record whose file was moved behind its back. A
+ * failure to move or open the file is reported too, so it never surfaces as
+ * the host's command error.
  */
 async function resume(ctx: ExtensionCommandContext, record: SessionRecord): Promise<void> {
-	const { target, restored } = resolveResumeTarget(record);
+	let target: string;
+	let restored: string[];
+	try {
+		({ target, restored } = resolveResumeTarget(record));
+	} catch (error) {
+		ctx.ui.notify(`Failed to restore session: ${errorMessage(error)}`, "error");
+		return;
+	}
 	if (!existsSync(target)) {
 		ctx.ui.notify("Session file is missing", "warning");
 		return;
 	}
 	if (restored.length > 0) ctx.ui.notify("Restored to the active sessions list", "info");
-	// A cancelled switch keeps the current session, which needs no follow-up.
-	await ctx.switchSession(target);
+	try {
+		// A cancelled switch keeps the current session, which needs no follow-up.
+		await ctx.switchSession(target);
+	} catch (error) {
+		ctx.ui.notify(`Failed to switch session: ${errorMessage(error)}`, "error");
+	}
+}
+
+/** A thrown value's message, for a one-line notification. */
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /** The terminal picker; resolves to the chosen record, or null when cancelled. */
@@ -161,7 +179,9 @@ async function pickWithSelect(
  */
 export async function runSessions(_pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
 	const records = await loadSessions("current", ctx.cwd);
-	if (records.length === 0) {
+	// The terminal picker stays reachable without sessions in this folder: `tab`
+	// switches to the `all` scope, which reloads sessions from everywhere.
+	if (records.length === 0 && ctx.mode !== "tui") {
 		ctx.ui.notify("No sessions found", "info");
 		return;
 	}

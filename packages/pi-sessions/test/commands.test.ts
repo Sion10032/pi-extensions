@@ -175,6 +175,23 @@ test("a chosen session whose file vanished is not switched", async () => {
 	assert.deepEqual(notices, ["Session file is missing"]);
 });
 
+test("the TUI picker still opens when the current folder has no sessions", async () => {
+	let renders = 0;
+	let rendered = "";
+	const { ctx, notices } = fakeCtx({
+		mode: "tui",
+		onPicker: (text) => {
+			renders++;
+			rendered = text;
+		},
+	});
+	await runSessions({} as ExtensionAPI, ctx, "");
+	// No early "nothing to show" return, so `tab` can still reload the all scope.
+	assert.equal(renders, 1);
+	assert.deepEqual(notices, []);
+	assert.match(rendered, /No sessions match/);
+});
+
 test("the TUI picker applies the archive filter argument", async () => {
 	const live = liveDir();
 	const file = join(live, `a_${ID}.jsonl`);
