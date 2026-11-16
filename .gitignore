@@ -2,3 +2,6 @@
 
 .direnv
 result
+node_modules/
+*.tsbuildinfo
+.DS_Store
