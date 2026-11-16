@@ -87,6 +87,11 @@ export class PickerState {
 		this.archiveFilterValue = nextIn(ARCHIVE_FILTER_ORDER, this.archiveFilterValue);
 	}
 
+	/** Start on a given archive filter, e.g. from `/sessions archived`. */
+	setArchiveFilter(filter: ArchiveFilter): void {
+		this.archiveFilterValue = filter;
+	}
+
 	toggleNamed(): void {
 		this.namedOnlyValue = !this.namedOnlyValue;
 	}

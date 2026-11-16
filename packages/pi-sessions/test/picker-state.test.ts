@@ -38,6 +38,19 @@ test("toggleExpand reveals children and persists across filters", () => {
 	assert.equal(state.rows().length, 3);
 });
 
+test("setArchiveFilter picks the archive state directly", () => {
+	const state = new PickerState([parent, child, archived], undefined, "/work");
+	state.setArchiveFilter("archived");
+	assert.equal(state.archiveFilter, "archived");
+	assert.deepEqual(state.rows().map((r) => r.record.info.path), [archived.info.path]);
+	state.setArchiveFilter("all");
+	assert.equal(state.archiveFilter, "all");
+	assert.deepEqual(
+		state.rows().map((r) => r.record.info.path),
+		[parent.info.path, archived.info.path],
+	);
+});
+
 test("selection is kept by path across filter changes and clamped", () => {
 	const state = new PickerState([parent, child, archived], undefined, "/work");
 	state.toggleExpand();
