@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hasName, parseQuery, sortRecords } from "../src/search.ts";
+import { hasName, matchScore, parseQuery, sortRecords } from "../src/search.ts";
 import type { SessionRecord } from "../src/types.ts";
 
 const record = (over: Partial<SessionRecord["info"]>): SessionRecord => ({
@@ -68,4 +68,16 @@ test("phrases match across collapsed whitespace and regex ranks names first", ()
 	const regexName = record({ path: "/x/c.jsonl", name: "fixme now" });
 	const regexText = record({ path: "/x/d.jsonl", name: "other", allMessagesText: "fixme" });
 	assert.deepEqual(paths(sortRecords([regexText, regexName], parseQuery("re:^fix"), "relevance")), ["/x/c.jsonl", "/x/d.jsonl"]);
+});
+
+test("cached message text follows in-place updates", () => {
+	const info = record({ name: "other", allMessagesText: "Alpha\none" }).info;
+	assert.equal(matchScore(info, parseQuery("alpha")), 1_000_000);
+	assert.equal(matchScore(info, parseQuery('"alpha one"')), 1_000_000);
+	assert.equal(matchScore(info, parseQuery("re:Alpha\\s+one")), 1_000_000);
+	info.allMessagesText = "Beta two";
+	assert.equal(matchScore(info, parseQuery("alpha")), undefined);
+	assert.equal(matchScore(info, parseQuery('"alpha one"')), undefined);
+	assert.equal(matchScore(info, parseQuery("re:Alpha")), undefined);
+	assert.equal(matchScore(info, parseQuery("beta")), 1_000_000);
 });

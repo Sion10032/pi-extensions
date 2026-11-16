@@ -67,6 +67,36 @@ function normalizeText(text: string): string {
 	return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+interface CachedText {
+	/** The `allMessagesText` the derived views below were built from. */
+	source: string;
+	/** The source, lowercased, for substring matching. */
+	lower: string;
+	/** The source, lowercased with whitespace collapsed, for phrases. */
+	normalized: string;
+}
+
+/**
+ * `allMessagesText` can reach megabytes, while the picker re-filters and
+ * re-sorts on every keystroke. Derive the searchable views once per
+ * `SessionInfo` and reuse them; comparing `source` as well keeps an in-place
+ * text update from matching stale text. Entries die with their session.
+ */
+const textCache = new WeakMap<SessionInfo, CachedText>();
+
+function messageText(info: SessionInfo): CachedText {
+	const source = info.allMessagesText ?? "";
+	const cached = textCache.get(info);
+	if (cached && cached.source === source) return cached;
+	const fresh: CachedText = {
+		source,
+		lower: source.toLowerCase(),
+		normalized: normalizeText(source),
+	};
+	textCache.set(info, fresh);
+	return fresh;
+}
+
 /** Split on whitespace, keeping `"quoted phrases"` together. */
 function tokenize(trimmed: string): QueryToken[] {
 	const tokens: QueryToken[] = [];
@@ -141,8 +171,13 @@ function wordTier(info: SessionInfo, word: string): ScoredTier | undefined {
 	const needle = word.toLowerCase();
 	const name = searchableName(info);
 	if (name && name.toLowerCase().includes(needle)) return NAME;
-	const text = [info.id, info.allMessagesText, info.cwd];
-	if (text.some((field) => field.toLowerCase().includes(needle))) return TEXT;
+	if (
+		info.id.toLowerCase().includes(needle) ||
+		messageText(info).lower.includes(needle) ||
+		info.cwd.toLowerCase().includes(needle)
+	) {
+		return TEXT;
+	}
 	let best: number | undefined;
 	for (const candidate of [name, info.cwd]) {
 		const match = fuzzyMatch(word, candidate);
@@ -160,7 +195,12 @@ function phraseTier(info: SessionInfo, phrase: string): ScoredTier | undefined {
 	const needle = normalizeText(phrase);
 	if (!needle) return undefined;
 	if (normalizeText(searchableName(info)).includes(needle)) return NAME;
-	const text = normalizeText([info.id, info.allMessagesText, info.cwd].join(" "));
+	// Normalizing field by field and joining the non-empty parts gives the same
+	// collapsed string as normalizing the raw join, without re-processing the
+	// cached message text on every keystroke.
+	const text = [normalizeText(info.id), messageText(info).normalized, normalizeText(info.cwd)]
+		.filter(Boolean)
+		.join(" ");
 	return text.includes(needle) ? TEXT : undefined;
 }
 
@@ -168,7 +208,7 @@ function phraseTier(info: SessionInfo, phrase: string): ScoredTier | undefined {
 function regexTier(info: SessionInfo, regex: RegExp): ScoredTier | undefined {
 	const name = searchableName(info);
 	if (name && regex.test(name)) return NAME;
-	const text = [info.id, info.allMessagesText, info.cwd];
+	const text = [info.id, messageText(info).source, info.cwd];
 	return text.some((field) => regex.test(field)) ? TEXT : undefined;
 }
 
