@@ -258,9 +258,14 @@ export class SessionPicker implements Component {
 		if (row === undefined) return;
 		const action = state.archiveAction();
 		if (action === "none") return;
-		if (action === "archive" && row.descendantCount > 0) {
-			this.confirming = { record: row.record, children: row.descendantCount };
-			return;
+		// Count every loaded descendant, not the visible rows: a query or the
+		// recent sort flattens the list and would archive children silently.
+		if (action === "archive") {
+			const children = state.descendantCount(row.record);
+			if (children > 0) {
+				this.confirming = { record: row.record, children };
+				return;
+			}
 		}
 		this.props.onToggleArchive(row.record);
 	}

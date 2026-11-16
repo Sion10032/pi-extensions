@@ -109,11 +109,11 @@ function toDate(value: unknown): Date | undefined {
 }
 
 /**
- * When the session was archived. The index is best effort, so a session it
- * does not know about (or an index that failed to parse) falls back to the
- * file's own modification time.
+ * When an archived session was archived. The index is best effort, so a
+ * session it does not know about (or an index that failed to parse) falls back
+ * to the file's own modification time.
  */
-function archiveDate(index: Record<string, IndexEntry>, info: SessionInfo): Date {
+function archivedAt(index: Record<string, IndexEntry>, info: SessionInfo): Date {
 	return toDate(index[indexKey(info.path)]?.archivedAt) ?? info.modified;
 }
 
@@ -145,10 +145,13 @@ export async function loadSessions(scope: Scope, cwd: string): Promise<SessionRe
 			if (seenIds.has(info.id)) continue;
 			seenIds.add(info.id);
 		}
+		const archived = isArchived(info.path);
 		records.set(key, {
 			info,
-			archived: isArchived(info.path),
-			archiveDate: archiveDate(index, info),
+			archived,
+			// A live file has no archive date of its own; a stale archived twin's
+			// index entry must not stand in for it.
+			archiveDate: archived ? archivedAt(index, info) : info.modified,
 		});
 	}
 	return [...records.values()].sort((a, b) => b.info.modified.getTime() - a.info.modified.getTime());

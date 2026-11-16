@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, test } from "node:test";
 
+import { archiveRoot, cwdDirName, sessionsRoot } from "../src/paths.ts";
 import { PickerState } from "../src/picker-state.ts";
 import type { SessionRecord } from "../src/types.ts";
+
+beforeEach(() => {
+	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-sessions-state-machine-"));
+});
 
 const rec = (path: string, over: Partial<SessionRecord> = {}): SessionRecord => ({
 	info: {
@@ -96,6 +104,29 @@ test("a query flattens the list", () => {
 	const state = new PickerState([parent, child, archived], undefined, "/work");
 	state.setQuery("kid");
 	assert.deepEqual(state.rows().map((r) => r.depth), [0]);
+});
+
+test("descendantCount counts every loaded record, archived twins included", () => {
+	const dir = cwdDirName("/work");
+	const parentPath = join(sessionsRoot(), dir, "a.jsonl");
+	const liveChildPath = join(sessionsRoot(), dir, "b.jsonl");
+	const archivedTwin = join(archiveRoot(), dir, "a.jsonl");
+	const twinChildPath = join(sessionsRoot(), dir, "c.jsonl");
+	const withParent = (path: string, parentSessionPath: string): SessionRecord =>
+		rec(path, { info: { ...rec(path).info, parentSessionPath } });
+	const root = rec(parentPath, { info: { ...rec(parentPath).info, name: "root" } });
+	const liveChild = withParent(liveChildPath, parentPath);
+	const twinChild = withParent(twinChildPath, archivedTwin);
+	const state = new PickerState([root, liveChild, twinChild], undefined, "/work");
+
+	// A child that recorded the archived twin of its parent still counts.
+	assert.equal(state.descendantCount(root), 2);
+	assert.equal(state.descendantCount(liveChild), 0);
+
+	// Filters and sorts hide rows; the count stays the real archive size.
+	state.setQuery("root");
+	state.cycleSort();
+	assert.equal(state.descendantCount(root), 2);
 });
 
 test("the remaining controls cycle and toggle", () => {

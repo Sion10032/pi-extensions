@@ -22,14 +22,16 @@ const kb = { matches: (data: string, action: string) => ({ "tui.select.confirm":
 
 function makePicker(records: SessionRecord[], current?: string, pickerTheme: Theme = theme) {
 	const calls: string[] = [];
+	const reloads: string[] = [];
 	const state = new PickerState(records, current, "/work");
 	const picker = new SessionPicker({
 		state, theme: pickerTheme, tui, keybindings: kb,
 		onResume: (r) => calls.push(`resume:${r.info.path}`),
 		onToggleArchive: (r) => calls.push(`toggle:${r.info.path}`),
 		onCancel: () => calls.push("cancel"),
+		onReload: (scope) => reloads.push(scope),
 	});
-	return { picker, state, calls };
+	return { picker, state, calls, reloads };
 }
 
 const parent = rec("/w/a.jsonl", { name: "root" });
@@ -70,6 +72,21 @@ test("ctrl+a on a parent with children asks for confirmation first", () => {
 	assert.deepEqual(calls, ["toggle:/w/a.jsonl"]);
 });
 
+test("ctrl+a counts hidden descendants when a query flattens the list", () => {
+	const { picker, state, calls } = makePicker([parent, child], "/w/x.jsonl");
+	state.setQuery("root");
+	// The flat view reports no descendants of its own: the row cannot be trusted.
+	assert.equal(state.rows().length, 1);
+	assert.equal(state.rows()[0].descendantCount, 0);
+
+	picker.handleInput("\u0001");
+
+	assert.match(picker.render(80).join("\n"), /Archive root and 1 child sessions\?/);
+	assert.deepEqual(calls, []);
+	picker.handleInput("\r");
+	assert.deepEqual(calls, ["toggle:/w/a.jsonl"]);
+});
+
 test("ctrl+a on an archived session toggles immediately", () => {
 	const { picker, calls } = makePicker([archived], undefined);
 	picker.handleInput("\u0014"); // archive filter -> archived
@@ -97,4 +114,20 @@ test("esc cancels", () => {
 	const { picker, calls } = makePicker([parent], undefined);
 	picker.handleInput("\u001b");
 	assert.deepEqual(calls, ["cancel"]);
+});
+
+test("tab switches the scope and asks the owner to reload it", () => {
+	const { picker, state, reloads } = makePicker([parent], undefined);
+	picker.handleInput("\t");
+	assert.equal(state.scope, "all");
+	assert.deepEqual(reloads, ["all"]);
+});
+
+test("control characters in a title never reach the terminal", () => {
+	const multiline = rec("/w/m.jsonl", { firstMessage: "first line\nsecond\u001b[31mred" });
+	const { picker } = makePicker([multiline], undefined);
+	const titleLine = picker.render(80).find((line) => line.includes("first line"));
+	assert.ok(titleLine);
+	assert.match(titleLine, /first line second \[31mred/);
+	assert.doesNotMatch(titleLine, /[\u0000-\u001f\u007f-\u009f]/);
 });

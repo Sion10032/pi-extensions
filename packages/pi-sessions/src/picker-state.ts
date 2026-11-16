@@ -12,6 +12,7 @@
  */
 import { resolve } from "node:path";
 
+import { twinPaths } from "./paths.ts";
 import { parseQuery } from "./search.ts";
 import {
 	buildRows,
@@ -154,6 +155,45 @@ export class PickerState {
 	/** True for the session file the session manager is still writing. */
 	isCurrent(record: SessionRecord): boolean {
 		return this.currentPath !== undefined && resolve(record.info.path) === this.currentPath;
+	}
+
+	/**
+	 * Sessions below `record` across every loaded record - not just the rows on
+	 * screen. A query, the named filter and the recent sort flatten the list and
+	 * hide children, so the row's own `descendantCount` cannot answer how much
+	 * an archive would move. Parent links are matched through twins, the way the
+	 * loader resolves them, and a visited set keeps a parent cycle finite.
+	 */
+	descendantCount(record: SessionRecord): number {
+		const byPath = new Map<string, SessionRecord>();
+		for (const candidate of this.records) byPath.set(resolve(candidate.info.path), candidate);
+		const children = new Map<string, SessionRecord[]>();
+		for (const candidate of this.records) {
+			const parentPath = candidate.info.parentSessionPath;
+			if (!parentPath) continue;
+			const parentKey = twinPaths(parentPath)
+				.map((path) => resolve(path))
+				.find((key) => byPath.has(key));
+			if (parentKey === undefined) continue;
+			const siblings = children.get(parentKey);
+			if (siblings) siblings.push(candidate);
+			else children.set(parentKey, [candidate]);
+		}
+		const rootKey = resolve(record.info.path);
+		const seen = new Set<string>([rootKey]);
+		const queue = [rootKey];
+		let count = 0;
+		while (queue.length > 0) {
+			const key = queue.shift()!;
+			for (const child of children.get(key) ?? []) {
+				const childKey = resolve(child.info.path);
+				if (seen.has(childKey)) continue;
+				seen.add(childKey);
+				count++;
+				queue.push(childKey);
+			}
+		}
+		return count;
 	}
 
 	/**

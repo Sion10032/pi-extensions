@@ -8,6 +8,7 @@ import { archiveSessionFile } from "../src/archive.ts";
 import { archiveRoot, cwdDirName, sessionsRoot } from "../src/paths.ts";
 import { parseQuery } from "../src/search.ts";
 import { buildRows, filterRecords, loadSessions } from "../src/sessions.ts";
+import { writeIndex } from "../src/state.ts";
 
 const CWD = "/work/project";
 const ID = "01a0aaaa-0000-7000-8000-000000000001";
@@ -58,6 +59,23 @@ test("a session outside the sessions tree is not loaded", async () => {
 	writeFileSync(outside, `${header(CHILD).join("\n")}\n`);
 	const records = await loadSessions("current", CWD);
 	assert.equal(records.some((r) => r.info.path === outside), false);
+});
+
+test("a live session reports its own activity, not a stale archive date", async () => {
+	const { parent } = seed();
+	archiveSessionFile(parent);
+	// pi kept writing to the live path after the archive, so both copies exist.
+	writeFileSync(parent, `${header(ID, undefined, "root").join("\n")}\n`);
+	writeIndex({
+		[join(cwdDirName(CWD), basename(parent))]: { name: "root", cwd: CWD, archivedAt: "2026-02-01T00:00:00.000Z" },
+	});
+	const records = await loadSessions("current", CWD);
+	const record = records.find((candidate) => candidate.info.path === parent);
+	assert.ok(record);
+	assert.equal(record.archived, false);
+	// The live inode's date comes from the session itself, never from the index
+	// entry its archived twin left behind.
+	assert.notEqual(record.archiveDate.toISOString(), "2026-02-01T00:00:00.000Z");
 });
 
 test("default active filter hides archived sessions and their children", async () => {
