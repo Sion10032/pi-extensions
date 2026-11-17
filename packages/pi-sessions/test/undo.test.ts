@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, test } from "node:test";
 
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-import { findUndoTarget } from "../src/undo.ts";
+import { findUndoTarget, truncateSessionFile } from "../src/undo.ts";
 
 const CWD = "/work/project";
 const ID = "01a0aaaa-0000-7000-8000-000000000001";
@@ -128,4 +128,57 @@ test("findUndoTarget joins text blocks and drops non-text parts", () => {
 		]),
 	]);
 	assert.equal(findUndoTarget(sm)?.text, "ab");
+});
+
+test("truncateSessionFile drops everything after the kept row", () => {
+	const sm = open([
+		user("u1", null, "first"),
+		assistant("a1", "u1"),
+		user("u2", "a1", "second"),
+		assistant("a2", "u2"),
+	]);
+	const file = sm.getSessionFile();
+	assert.equal(file !== undefined, true);
+	const result = truncateSessionFile(file!, "a1");
+	assert.deepEqual(result, { kept: 3, removed: 2 });
+	const lines = readFileSync(file!, "utf8").split("\n").filter((line) => line !== "");
+	assert.equal(lines.length, 3);
+	assert.equal(JSON.parse(lines[2]!).id, "a1");
+	assert.equal(SessionManager.open(file!).getLeafId(), "a1");
+});
+
+test("truncateSessionFile keeps only the header when throughId is null", () => {
+	const sm = open([user("u1", null, "only"), assistant("a1", "u1")]);
+	const file = sm.getSessionFile()!;
+	const result = truncateSessionFile(file, null);
+	assert.deepEqual(result, { kept: 1, removed: 2 });
+	const reopened = SessionManager.open(file);
+	assert.equal(reopened.getLeafId(), null);
+	reopened.appendMessage({ role: "user", content: "next", timestamp: 5 });
+	assert.equal(reopened.getBranch().length, 1);
+});
+
+test("truncateSessionFile also drops sibling rows written after the kept one", () => {
+	const sm = open([user("u1", null, "first"), assistant("a1", "u1")]);
+	sm.branch("a1");
+	sm.appendMessage({ role: "user", content: "sibling", timestamp: 7 });
+	const file = sm.getSessionFile()!;
+	assert.deepEqual(truncateSessionFile(file, "a1"), { kept: 3, removed: 1 });
+});
+
+test("truncateSessionFile preserves blank and unparseable rows before the cut", () => {
+	const file = join(dir, "ragged.jsonl");
+	writeFileSync(file, `${JSON.stringify(header)}\n\nnot json\n${JSON.stringify(user("u1", null, "hi"))}\n${JSON.stringify(assistant("a1", "u1"))}\n`);
+	assert.deepEqual(truncateSessionFile(file, "u1"), { kept: 4, removed: 1 });
+	const lines = readFileSync(file, "utf8").split("\n");
+	assert.equal(lines[2], "not json");
+	assert.equal(readFileSync(file, "utf8").endsWith("\n"), true);
+});
+
+test("truncateSessionFile leaves the file untouched for an unknown id", () => {
+	const sm = open([user("u1", null, "first")]);
+	const file = sm.getSessionFile()!;
+	const before = readFileSync(file, "utf8");
+	assert.throws(() => truncateSessionFile(file, "nope"), /Session entry not found: nope/);
+	assert.equal(readFileSync(file, "utf8"), before);
 });
