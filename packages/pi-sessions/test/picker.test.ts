@@ -65,6 +65,8 @@ test("ctrl+a archives under the Kitty keyboard protocol", () => {
 	const { picker, calls } = makePicker([archived], undefined);
 	picker.handleInput("\u001b[116;5u"); // ctrl+t -> archived view
 	picker.handleInput("\u001b[97;5u"); // ctrl+a
+	assert.match(picker.render(80).join("\n"), /Unarchive this session\?/);
+	picker.handleInput("\r");
 	assert.deepEqual(calls, ["toggle:/w/c.jsonl"]);
 });
 
@@ -112,10 +114,42 @@ test("typing filters and enter resumes the selection", () => {
 test("ctrl+a on a parent with children asks for confirmation first", () => {
 	const { picker, calls } = makePicker([parent, child], "/w/x.jsonl");
 	picker.handleInput("\u0001");
-	assert.match(picker.render(80).join("\n"), /Archive .*child/);
+	assert.match(picker.render(80).join("\n"), /Archive this session and 1 child sessions\?/);
 	assert.deepEqual(calls, []);
 	picker.handleInput("\r");
 	assert.deepEqual(calls, ["toggle:/w/a.jsonl"]);
+});
+
+test("ctrl+a on a single session asks for confirmation too", () => {
+	const single = rec("/w/s.jsonl", { name: "solo" });
+	const { picker, calls } = makePicker([single], undefined);
+	picker.handleInput("\u0001");
+	assert.match(picker.render(80).join("\n"), /Archive this session\?/);
+	assert.deepEqual(calls, []);
+	picker.handleInput("\r");
+	assert.deepEqual(calls, ["toggle:/w/s.jsonl"]);
+});
+
+test("ctrl+a on the current session confirms the deferred archive", () => {
+	const { picker, calls } = makePicker([parent], parent.info.path);
+	picker.handleInput("\u0001");
+	assert.match(
+		picker.render(80).join("\n"),
+		/Archive the current session when it closes\?/,
+	);
+	assert.deepEqual(calls, []);
+	picker.handleInput("\r");
+	assert.deepEqual(calls, ["toggle:/w/a.jsonl"]);
+});
+
+test("the confirmation prompt omits a long title", () => {
+	const longName = "very-long-session-title-".repeat(8);
+	const long = rec("/w/long.jsonl", { name: longName });
+	const { picker } = makePicker([long], undefined);
+	picker.handleInput("\u0001");
+	const promptLine = picker.render(120).find((line) => line.includes("Archive this session"));
+	assert.ok(promptLine);
+	assert.doesNotMatch(promptLine, /very-long-session-title/);
 });
 
 test("ctrl+a counts hidden descendants when a query flattens the list", () => {
@@ -127,16 +161,19 @@ test("ctrl+a counts hidden descendants when a query flattens the list", () => {
 
 	picker.handleInput("\u0001");
 
-	assert.match(picker.render(80).join("\n"), /Archive root and 1 child sessions\?/);
+	assert.match(picker.render(80).join("\n"), /Archive this session and 1 child sessions\?/);
 	assert.deepEqual(calls, []);
 	picker.handleInput("\r");
 	assert.deepEqual(calls, ["toggle:/w/a.jsonl"]);
 });
 
-test("ctrl+a on an archived session toggles immediately", () => {
+test("ctrl+a on an archived session asks before unarchiving", () => {
 	const { picker, calls } = makePicker([archived], undefined);
 	picker.handleInput("\u0014"); // archive filter -> archived
 	picker.handleInput("\u0001");
+	assert.match(picker.render(80).join("\n"), /Unarchive this session\?/);
+	assert.deepEqual(calls, []);
+	picker.handleInput("\r");
 	assert.deepEqual(calls, ["toggle:/w/c.jsonl"]);
 });
 

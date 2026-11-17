@@ -21,7 +21,7 @@ import {
 
 import { displayTitle, relativeTime } from "./paths.ts";
 import { hasName } from "./search.ts";
-import type { PickerState } from "./picker-state.ts";
+import type { ArchiveAction, PickerState } from "./picker-state.ts";
 import type { TreeRow } from "./sessions.ts";
 import type { Scope, SessionRecord } from "./types.ts";
 
@@ -31,9 +31,10 @@ const MAX_VISIBLE = 10;
 const HINT_LINE_1 = 'tab scope · re:<pattern> regex · "phrase" exact';
 const FOOTER_LINE = "ctrl+e expand · ctrl+a archive · enter resume · esc cancel";
 
-/** A pending archive, waiting for Enter to confirm. */
+/** A pending archive action, waiting for Enter to confirm. */
 interface Confirmation {
 	record: SessionRecord;
+	action: ArchiveAction;
 	/** Descendant count captured when the prompt was opened. */
 	children: number;
 }
@@ -238,9 +239,7 @@ export class SessionPicker implements Component {
 
 		lines.push("");
 		if (this.confirming !== undefined) {
-			const title = displayTitle(this.confirming.record.info);
-			const prompt = `Archive ${title} and ${this.confirming.children} child sessions? enter confirm · esc cancel`;
-			lines.push(theme.fg("accent", truncateToWidth(prompt, safeWidth, "…")));
+			lines.push(theme.fg("accent", truncateToWidth(this.confirmationPrompt(), safeWidth, "…")));
 		} else {
 			lines.push(theme.fg("dim", truncateToWidth(FOOTER_LINE, safeWidth, "…")));
 		}
@@ -255,7 +254,7 @@ export class SessionPicker implements Component {
 		this.props.tui.requestRender();
 	}
 
-	/** `ctrl+a`: confirm a recursive archive, otherwise act immediately. */
+	/** `ctrl+a`: every archive/unarchive action asks for confirmation first. */
 	private archiveSelected(): void {
 		const { state } = this.props;
 		const row = state.selectedRow();
@@ -264,14 +263,18 @@ export class SessionPicker implements Component {
 		if (action === "none") return;
 		// Count every loaded descendant, not the visible rows: a query or the
 		// recent sort flattens the list and would archive children silently.
-		if (action === "archive") {
-			const children = state.descendantCount(row.record);
-			if (children > 0) {
-				this.confirming = { record: row.record, children };
-				return;
-			}
+		this.confirming = { record: row.record, action, children: state.descendantCount(row.record) };
+	}
+
+	/** The title is deliberately omitted: a long title must not hide the action. */
+	private confirmationPrompt(): string {
+		const { action, children } = this.confirming!;
+		if (action === "deferred-archive") {
+			return "Archive the current session when it closes? enter confirm · esc cancel";
 		}
-		this.props.onToggleArchive(row.record);
+		const verb = action === "unarchive" ? "Unarchive" : "Archive";
+		const scope = children > 0 ? ` this session and ${children} child sessions?` : " this session?";
+		return `${verb}${scope} enter confirm · esc cancel`;
 	}
 
 	private renderHeader(width: number): string[] {

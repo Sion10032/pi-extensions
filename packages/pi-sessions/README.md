@@ -5,7 +5,7 @@
 ## 功能概览
 
 - **统一浏览**：一个 `/sessions` 界面里同时看活跃会话与归档会话，支持模糊搜索、`"整段短语"`、`re:<pattern>` 正则、树形折叠、`current`/`all` 作用域、命名过滤、路径显示与三种排序。
-- **picker 内归档**：`ctrl+a` 直接归档/取消归档选中会话。归档父会话时，整棵 `parentSession` 子树（子代理会话、fork 及其后代）一起移动，有派生会话时先显示确认框与数量。
+- **picker 内归档**：`ctrl+a` 归档/取消归档选中会话，所有动作都先显示确认行。归档父会话时，整棵 `parentSession` 子树（子代理会话、fork 及其后代）一起移动。
 - **整棵子树恢复**：`enter` 恢复归档会话；归档文件先移回活跃目录，再切换过去。根会话与全部派生会话一起回来。
 - **当前会话延迟归档**：pi 正在写入的文件不能移动，所以 `/archive`、`archive_session` 工具和 picker 对当前会话的 `ctrl+a` 只记录“关闭后归档”，等会话关闭时才移动；`/reload` 不移动。
 - **物理移动，不靠索引**：归档状态由“文件在 `sessions/` 还是 `sessions-archive/`”决定，因此原生 `/resume` 始终干净，索引丢失也不会丢归档。
@@ -64,7 +64,7 @@ pi -e ./packages/pi-sessions
 | `ctrl+p` | 显示/隐藏会话文件路径 |
 | `ctrl+t` | 切换归档筛选：`active` → `archived` → `all` |
 | `ctrl+e` | 展开/折叠选中行的子树（折叠时父行右侧显示 `↳N`） |
-| `ctrl+a` | 归档/取消归档选中会话；当前会话为延迟归档，已归档的当前会话不做任何操作 |
+| `ctrl+a` | 归档/取消归档选中会话（先确认）；当前会话为延迟归档，已归档的当前会话不做任何操作 |
 | `enter` | 恢复选中会话（归档会话会先移回活跃目录） |
 | `esc` | 取消 |
 | `↑` / `↓`、`pgup` / `pgdn` | 上下移动、翻页 |
@@ -77,7 +77,7 @@ pi -e ./packages/pi-sessions
 - 标题栏与原生会话选择器一致：`Sessions (Current Folder)` / `Sessions (All)`，`> ` 过滤框，选中行高亮，命名会话用 warning 色，当前会话用 accent 色。
 - 有过滤词时，列表退化为扁平结果列表（与原生 picker 一致）；没有过滤词时，无论切换哪种排序，子会话都保持嵌套并默认折叠。
 - 折叠时父行右侧显示 `↳N` 后代数（即使标题很长也不会被截掉）；展开后子行使用原生 `├─` / `└─` 树形前缀。
-- 带派生会话的会话在归档前会先显示确认行：`Archive <标题> and N child sessions? enter confirm · esc cancel`；取消归档不需要确认。
+- `ctrl+a` 的所有动作都会先显示确认行，且不显示标题（长标题不会把动作文字挤掉）：`Archive this session?`、`Archive this session and N child sessions?`、`Unarchive this session?`、`Archive the current session when it closes?`；`enter` 确认，`esc` 取消。
 - `tab`、`ctrl+s`、`ctrl+n`、`ctrl+p` 使用 pi 的键位名 `tui.input.tab`、`app.session.toggleSort`、`app.session.toggleNamedFilter`、`app.session.togglePath`，可在 `~/.pi/agent/keybindings.json` 里改；`ctrl+t`、`ctrl+e`、`ctrl+a` 是本插件直接读取的按键，不可改。
 
 ## 归档语义
