@@ -79,6 +79,13 @@ test("a long title keeps the descendant badge visible", () => {
 	assert.match(line, /↳1/);
 });
 
+test("the descendant badge follows the message", () => {
+	const { picker } = makePicker([parent, child], parent.info.path);
+	const line = picker.render(80).find((candidate) => candidate.includes("root"));
+	assert.ok(line);
+	assert.match(line, /root ↳1/);
+});
+
 test("the selected row background covers the right metadata", () => {
 	const backgroundLines: string[] = [];
 	const bgTheme = {

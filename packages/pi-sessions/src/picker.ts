@@ -335,24 +335,24 @@ export class SessionPicker implements Component {
 		const cursor = selected ? theme.fg("accent", "› ") : "  ";
 		const prefix = theme.fg("dim", treePrefix(row));
 
-		// Count and metadata live on the right so a long title can never hide
-		// the `↳N` badge that tells the user the row has children.
+		// The `↳N` badge sits right after the message, like a suffix; the right
+		// column keeps the message count and age.
+		const badge = row.descendantCount > 0 ? ` ↳${row.descendantCount}` : "";
 		const rightParts: string[] = [];
 		if (row.record.archived) rightParts.push("[archived]");
-		if (row.descendantCount > 0) rightParts.push(`↳${row.descendantCount}`);
 		if (state.showPath) rightParts.unshift(info.path);
 		rightParts.push(String(info.messageCount));
 		rightParts.push(relativeTime(row.record.archived ? row.record.archiveDate : info.modified));
 		const right = theme.fg("dim", rightParts.join("  "));
 
 		const leftWidth = visibleWidth(cursor) + visibleWidth(prefix);
-		const available = Math.max(10, width - leftWidth - visibleWidth(right) - 2);
+		const available = Math.max(10, width - leftWidth - visibleWidth(right) - 2 - visibleWidth(badge));
 		let message = truncatePlain(displayTitle(info), available);
 		const color = state.isCurrent(row.record) ? "accent" : hasName(info) ? "warning" : undefined;
 		if (color !== undefined) message = theme.fg(color, message);
 		if (selected) message = theme.bold(message);
 
-		const left = `${cursor}${prefix}${message}`;
+		const left = `${cursor}${prefix}${message}${theme.fg("dim", badge)}`;
 		const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
 		let line = `${left}${" ".repeat(gap)}${right}`;
 		if (selected) line = theme.bg("selectedBg", line);
