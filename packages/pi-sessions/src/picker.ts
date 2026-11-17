@@ -58,6 +58,12 @@ export interface SessionPickerProps {
 	keybindings: KeybindingsManager;
 	/** Resume the selected session, restoring it first when needed. */
 	onResume(record: SessionRecord): void;
+	/**
+	 * Rename the record; the owner writes the name and refreshes the rows.
+	 * Optional so a caller that cannot rename simply gets no `ctrl+r`, the same
+	 * way the native picker hides rename when it has no handler.
+	 */
+	onRename?(record: SessionRecord, name: string): void;
 	/** Archive or unarchive the record; the owner refreshes the rows. */
 	onToggleArchive(record: SessionRecord): void;
 	onCancel(): void;
@@ -116,6 +122,8 @@ export class SessionPicker implements Component {
 	private readonly input: Input;
 	/** Set while `ctrl+a` waits for Enter on a parent with children. */
 	private confirming: Confirmation | undefined;
+	/** Set while `ctrl+r` edits the selected session's name. */
+	private rename: { record: SessionRecord; input: Input } | undefined;
 	/** Rows rendered last, for mapping a click's row back to the selection. */
 	private visibleRows: TreeRow[] = [];
 	/** First rendered line of the session list; header and filter precede it. */
@@ -130,6 +138,22 @@ export class SessionPicker implements Component {
 
 	handleInput(data: string): void {
 		const { keybindings: kb, state, tui } = this.props;
+
+		// The rename panel owns every key while it is open: Enter saves, Esc
+		// cancels, the rest is text.
+		if (this.rename !== undefined) {
+			if (kb.matches(data, "tui.select.confirm")) {
+				const { record, input } = this.rename;
+				this.rename = undefined;
+				this.props.onRename?.(record, input.getValue());
+			} else if (kb.matches(data, "tui.select.cancel") || matchesKey(data, "ctrl+c")) {
+				this.rename = undefined;
+			} else {
+				this.rename.input.handleInput(data);
+			}
+			tui.requestRender();
+			return;
+		}
 
 		// A pending archive owns every key: Enter confirms, Esc cancels, the
 		// rest must not leak into the filter or the list.
@@ -160,6 +184,22 @@ export class SessionPicker implements Component {
 		}
 		if (matchesKey(data, "ctrl+a")) {
 			this.archiveSelected();
+			tui.requestRender();
+			return;
+		}
+
+		// `ctrl+r`: rename in place. The input starts from the session's own
+		// name, as the native picker does, so an unnamed session starts empty.
+		if (kb.matches(data, "app.session.rename") && this.props.onRename !== undefined) {
+			const row = state.selectedRow();
+			if (row !== undefined) {
+				const input = new Input({ prompt: "> " });
+				// Type the name in rather than `setValue`: `setValue` leaves the
+				// cursor at 0, so the first typed character would land in front of
+				// the existing name instead of after it.
+				input.handleInput(row.record.info.name ?? "");
+				this.rename = { record: row.record, input };
+			}
 			tui.requestRender();
 			return;
 		}
@@ -248,6 +288,15 @@ export class SessionPicker implements Component {
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const { state, theme } = this.props;
+		if (this.rename !== undefined) {
+			return [
+				theme.bold("Rename Session"),
+				...this.rename.input.render(safeWidth),
+				"",
+				theme.fg("dim", truncateToWidth("enter to save · esc to cancel", safeWidth, "…")),
+				"",
+			];
+		}
 		const lines = [...this.renderHeader(safeWidth), ...this.input.render(safeWidth)];
 		lines.push(this.props.state.loading
 			? theme.fg("dim", truncateToWidth(`  ${this.loadingText()}`, safeWidth, "…"))

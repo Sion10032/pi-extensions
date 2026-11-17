@@ -18,7 +18,7 @@ const rec = (path: string, over: Partial<SessionRecord["info"]> = {}): SessionRe
 
 const theme = { fg: (_c: string, s: string) => s, bg: (_c: string, s: string) => s, bold: (s: string) => s } as unknown as Theme;
 const tui = { requestRender() {} } as unknown as TUI;
-const kb = { matches: (data: string, action: string) => ({ "tui.select.confirm": "\r", "tui.select.cancel": "\u001b", "tui.select.up": "\u001b[A", "tui.select.down": "\u001b[B", "tui.select.pageUp": "\u001b[5~", "tui.select.pageDown": "\u001b[6~", "tui.input.tab": "\t", "app.session.toggleSort": "\u0013", "app.session.toggleNamedFilter": "\u000e", "app.session.togglePath": "\u0010" } as Record<string, string>)[action] === data } as unknown as KeybindingsManager;
+const kb = { matches: (data: string, action: string) => ({ "tui.select.confirm": "\r", "tui.select.cancel": "\u001b", "tui.select.up": "\u001b[A", "tui.select.down": "\u001b[B", "tui.select.pageUp": "\u001b[5~", "tui.select.pageDown": "\u001b[6~", "tui.input.tab": "\t", "app.session.toggleSort": "\u0013", "app.session.toggleNamedFilter": "\u000e", "app.session.togglePath": "\u0010", "app.session.rename": "\u0012" } as Record<string, string>)[action] === data } as unknown as KeybindingsManager;
 
 function makePicker(records: SessionRecord[], current?: string, pickerTheme: Theme = theme) {
 	const calls: string[] = [];
@@ -27,6 +27,7 @@ function makePicker(records: SessionRecord[], current?: string, pickerTheme: The
 	const picker = new SessionPicker({
 		state, theme: pickerTheme, tui, keybindings: kb,
 		onResume: (r) => calls.push(`resume:${r.info.path}`),
+		onRename: (r, name) => calls.push(`rename:${r.info.path}:${name}`),
 		onToggleArchive: (r) => calls.push(`toggle:${r.info.path}`),
 		onCancel: () => calls.push("cancel"),
 		onReload: (scope) => reloads.push(scope),
@@ -350,4 +351,41 @@ test("control characters in a title never reach the terminal", () => {
 	assert.ok(titleLine);
 	assert.match(titleLine, /first line second \[31mred/);
 	assert.doesNotMatch(titleLine, /[\u0000-\u001f\u007f-\u009f]/);
+});
+
+test("ctrl+r opens the rename panel prefilled with the current name", () => {
+	const { picker } = makePicker([parent], parent.info.path);
+	picker.handleInput("\u0012");
+	const text = picker.render(80).join("\n");
+	assert.match(text, /Rename Session/);
+	assert.match(text, /root/);
+	assert.doesNotMatch(text, /ctrl\+a/);
+});
+
+test("enter saves the typed name", () => {
+	// 预填的是现有名称（"root"），输入追加在后面
+	const { picker, calls } = makePicker([parent], parent.info.path);
+	picker.handleInput("\u0012");
+	picker.handleInput("ed");
+	picker.handleInput("\r");
+	assert.deepEqual(calls, ["rename:/w/a.jsonl:rooted"]);
+	assert.doesNotMatch(picker.render(80).join("\n"), /Rename Session/);
+});
+
+test("esc cancels without renaming", () => {
+	const { picker, calls } = makePicker([parent], parent.info.path);
+	picker.handleInput("\u0012");
+	picker.handleInput("x");
+	picker.handleInput("\u001b");
+	assert.deepEqual(calls, []);
+	assert.doesNotMatch(picker.render(80).join("\n"), /Rename Session/);
+});
+
+test("the rename panel swallows ctrl+a", () => {
+	const { picker, calls } = makePicker([parent], parent.info.path);
+	picker.handleInput("\u0012");
+	picker.handleInput("\u0001");
+	assert.deepEqual(calls, []);
+	assert.match(picker.render(80).join("\n"), /Rename Session/);
+	assert.doesNotMatch(picker.render(80).join("\n"), /Archive this session/);
 });
