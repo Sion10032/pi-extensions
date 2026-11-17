@@ -60,6 +60,22 @@ function treePrefix(row: TreeRow): string {
 	return parts.join("") + branch;
 }
 
+/**
+ * Truncate plain text without emitting ANSI resets. `truncateToWidth` closes
+ * its output with a full reset, which would clear the selected row's
+ * background before the right-side metadata; titles are plain text anyway.
+ */
+function truncatePlain(text: string, maxWidth: number): string {
+	if (maxWidth <= 0) return "";
+	if (visibleWidth(text) <= maxWidth) return text;
+	let result = "";
+	for (const char of text) {
+		if (visibleWidth(result + char) > maxWidth - 1) break;
+		result += char;
+	}
+	return `${result}…`;
+}
+
 function archiveFilterLabel(state: PickerState): string {
 	if (state.archiveFilter === "active") return "Active";
 	if (state.archiveFilter === "archived") return "Archived";
@@ -331,7 +347,7 @@ export class SessionPicker implements Component {
 
 		const leftWidth = visibleWidth(cursor) + visibleWidth(prefix);
 		const available = Math.max(10, width - leftWidth - visibleWidth(right) - 2);
-		let message = truncateToWidth(displayTitle(info), available, "…");
+		let message = truncatePlain(displayTitle(info), available);
 		const color = state.isCurrent(row.record) ? "accent" : hasName(info) ? "warning" : undefined;
 		if (color !== undefined) message = theme.fg(color, message);
 		if (selected) message = theme.bold(message);

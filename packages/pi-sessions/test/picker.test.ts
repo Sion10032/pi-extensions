@@ -79,6 +79,26 @@ test("a long title keeps the descendant badge visible", () => {
 	assert.match(line, /↳1/);
 });
 
+test("the selected row background covers the right metadata", () => {
+	const backgroundLines: string[] = [];
+	const bgTheme = {
+		fg: (_c: string, s: string) => s,
+		bold: (s: string) => s,
+		bg: (_c: string, s: string) => {
+			backgroundLines.push(s);
+			return s;
+		},
+	} as unknown as Theme;
+	const long = rec("/w/current.jsonl", { name: "current", firstMessage: "x".repeat(120), allMessagesText: "x" });
+	const kid = rec("/w/kid.jsonl", { name: "kid", parentSessionPath: "/w/current.jsonl" });
+	const { picker } = makePicker([long, kid], long.info.path, bgTheme);
+	picker.render(60);
+	assert.equal(backgroundLines.length, 1);
+	assert.match(backgroundLines[0], /↳1/);
+	// A full ANSI reset inside the title would clear selectedBg for the rest.
+	assert.doesNotMatch(backgroundLines[0], /\u001b\[0m/);
+});
+
 test("expanded children use the native tree prefix", () => {
 	const { picker } = makePicker([parent, child], parent.info.path);
 	picker.handleInput("\u0005");
