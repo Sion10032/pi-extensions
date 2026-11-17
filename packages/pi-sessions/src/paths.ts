@@ -9,6 +9,7 @@ import {
 	closeSync,
 	openSync,
 	readSync,
+	statSync,
 } from "node:fs";
 import {
 	basename,
@@ -165,4 +166,70 @@ export function readHeader(file: string): HeaderLite | undefined {
 	} finally {
 		if (fd !== undefined) closeSync(fd);
 	}
+}
+
+/** Buffers tried when reading the first entry; a huge first entry falls back to a larger one. */
+const FIRST_ENTRY_READ_SIZES = [16 * 1024, 256 * 1024, 4 * 1024 * 1024] as const;
+
+interface FirstEntryCache {
+	mtimeMs: number;
+	id: string | undefined;
+}
+
+const firstEntryCache = new Map<string, FirstEntryCache>();
+
+function readBytes(file: string, length: number): string {
+	const fd = openSync(file, "r");
+	try {
+		const buffer = Buffer.alloc(length);
+		const read = readSync(fd, buffer, 0, length, 0);
+		return buffer.subarray(0, read).toString("utf8");
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/**
+ * The `id` of a session's first non-header entry, or undefined when the file
+ * has none. Forks and clones copy that entry (and its id) from their parent;
+ * subagents start with a fresh one, which is how the picker tells them apart.
+ */
+export function firstEntryId(file: string): string | undefined {
+	let mtimeMs: number;
+	try {
+		mtimeMs = statSync(file).mtimeMs;
+	} catch {
+		return undefined;
+	}
+	const key = resolve(file);
+	const cached = firstEntryCache.get(key);
+	if (cached?.mtimeMs === mtimeMs) return cached.id;
+
+	let id: string | undefined;
+	for (const length of FIRST_ENTRY_READ_SIZES) {
+		let text: string;
+		try {
+			text = readBytes(file, length);
+		} catch {
+			break;
+		}
+		let readMore = false;
+		const lines = text.split("\n");
+		for (let index = 1; index < lines.length; index++) {
+			const line = lines[index]!.trim();
+			if (!line) continue;
+			try {
+				const entry = JSON.parse(line) as { type?: unknown; id?: unknown };
+				if (entry.type !== "session" && typeof entry.id === "string") id = entry.id;
+			} catch {
+				// A partial last line is retried with a larger buffer; anything else
+				// means the file is malformed, so leave the id undefined.
+				readMore = text.length === length && index === lines.length - 1;
+			}
+			break;
+		}
+		if (id !== undefined || !readMore) break;
+	}
+	firstEntryCache.set(key, { mtimeMs, id });
+	return id;
 }

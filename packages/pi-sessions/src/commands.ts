@@ -38,6 +38,7 @@ import {
 import { setPending } from "./state.ts";
 import type {
 	ArchiveFilter,
+	Scope,
 	SessionRecord,
 } from "./types.ts";
 
@@ -223,41 +224,61 @@ async function pickInTui(
 	return ctx.ui.custom<SessionRecord | null>((tui, theme, keybindings, done) => {
 		const state = new PickerState(records, ctx.sessionManager.getSessionFile(), ctx.cwd);
 		if (filter !== undefined) state.setArchiveFilter(filter);
+
+		let loadToken = 0;
+		let loadController: AbortController | undefined;
+		const reload = (scope: Scope): void => {
+			const token = ++loadToken;
+			loadController?.abort();
+			const controller = new AbortController();
+			loadController = controller;
+			state.beginLoading();
+			tui.requestRender();
+			void loadSessions(scope, ctx.cwd, {
+				signal: controller.signal,
+				onProgress: (next, progress) => {
+					if (token !== loadToken || state.scope !== scope) return;
+					state.setRecords(next);
+					state.setLoadingProgress(progress.loaded, progress.total, progress.phase);
+					tui.requestRender();
+				},
+			}).then((next) => {
+				if (token !== loadToken || state.scope !== scope) return;
+				state.finishLoading(next);
+				tui.requestRender();
+			}).catch((error) => {
+				if (token !== loadToken || controller.signal.aborted) return;
+				state.failLoading();
+				tui.requestRender();
+				ctx.ui.notify(`Failed to reload sessions: ${errorMessage(error)}`, "error");
+			});
+		};
+		const finish = (value: SessionRecord | null): void => {
+			// Invalidate the in-flight load before aborting so its rejection does
+			// not surface as an error after the picker has closed.
+			loadToken++;
+			loadController?.abort();
+			done(value);
+		};
+
 		return new SessionPicker({
 			state,
 			theme,
 			tui,
 			keybindings,
-			onResume: (record) => done(record),
-			onCancel: () => done(null),
+			onResume: (record) => finish(record),
+			onCancel: () => finish(null),
 			onToggleArchive: (record) => {
 				void toggleArchive(pi, ctx, record)
 					.then((result) => {
 						// A deferred archive moves nothing until shutdown, so the rows
 						// are still accurate and need no reload.
 						if (result.deferred) return;
-						const scope = state.scope;
-						return loadSessions(scope, ctx.cwd).then((next) => {
-							// A reload for a scope the user already left must not
-							// replace the rows of the scope now on screen.
-							if (state.scope !== scope) return;
-							state.setRecords(next);
-							tui.requestRender();
-						});
+						reload(state.scope);
 					})
-					.catch(() => ctx.ui.notify("Failed to reload sessions", "error"));
+					.catch((error) => ctx.ui.notify(`Failed to archive session: ${errorMessage(error)}`, "error"));
 			},
-			onReload: (scope) => {
-				void loadSessions(scope, ctx.cwd)
-					.then((next) => {
-						// A load for a scope the user already left must not replace
-						// the rows of the scope now on screen.
-						if (state.scope !== scope) return;
-						state.setRecords(next);
-						tui.requestRender();
-					})
-					.catch(() => ctx.ui.notify("Failed to reload sessions", "error"));
-			},
+			onReload: reload,
 		});
 	});
 }

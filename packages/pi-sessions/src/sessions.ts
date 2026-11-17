@@ -8,7 +8,7 @@
  * tree. Parent links are therefore resolved at read time - the recorded path
  * first, then its twin in the other tree - and never rewritten on disk.
  */
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import {
 	basename,
 	dirname,
@@ -24,6 +24,7 @@ import {
 import {
 	archiveRoot,
 	cwdDirName,
+	firstEntryId,
 	isArchived,
 	sessionsRoot,
 	twinPaths,
@@ -43,6 +44,7 @@ import type {
 	ArchiveFilter,
 	Scope,
 	SessionRecord,
+	SessionRelation,
 	SortMode,
 } from "./types.ts";
 
@@ -51,33 +53,46 @@ export interface TreeRow {
 	record: SessionRecord;
 	/** Nesting level; roots are 0. */
 	depth: number;
-	/** Nodes in this row's subtree, excluding the row itself. */
+	/** Nodes in this row's subtree, excluding the row itself (hidden rows included). */
 	descendantCount: number;
+	/** Nodes below this row that the current view can actually render. */
+	visibleDescendantCount: number;
 	/** True when no later sibling follows at the same level. */
 	isLast: boolean;
 	/** Per ancestor level: whether that level's vertical line continues below. */
 	ancestorContinues: boolean[];
 }
 
-/** Session infos from every directory; a directory that fails to list is skipped. */
-async function listAllIn(dirs: string[]): Promise<SessionInfo[]> {
-	const lists = await Promise.all(
-		dirs.map(async (dir) => {
-			try {
-				return await SessionManager.listAll(dir);
-			} catch {
-				return [];
-			}
-		}),
-	);
-	return lists.flat();
+/** One progress update emitted while a scope is loading. */
+export type LoadPhase = "live" | "archive";
+
+export interface LoadProgress {
+	/** Sessions (live) or archive directories loaded so far. */
+	loaded: number;
+	/** Total sessions (live) or archive directories. */
+	total: number;
+	phase: LoadPhase;
 }
 
-/** Session infos across every cwd directory; an unusable sessions root yields none. */
-async function listAllEverywhere(): Promise<SessionInfo[]> {
+export interface LoadSessionsOptions {
+	signal?: AbortSignal;
+	/** Called with the merged records after each batch; safe to render directly. */
+	onProgress?: (records: SessionRecord[], progress: LoadProgress) => void;
+}
+
+/** `SessionManager.listAll`'s progress callback, without importing its type. */
+type ListProgress = (loaded: number, total: number, partial?: readonly SessionInfo[]) => void;
+
+/** Session infos from one directory; a missing or unreadable directory yields none. */
+async function listAllInDir(
+	dir: string,
+	onProgress?: ListProgress,
+	signal?: AbortSignal,
+): Promise<SessionInfo[]> {
 	try {
-		return await SessionManager.listAll();
+		return await SessionManager.listAll(dir, onProgress, signal);
 	} catch {
+		signal?.throwIfAborted();
 		return [];
 	}
 }
@@ -118,24 +133,28 @@ function archivedAt(index: Record<string, IndexEntry>, info: SessionInfo): Date 
 }
 
 /**
- * Load every session the scope covers, live and archived, newest first.
- *
- * Only paths under the live or the archive root are kept, so a stray path the
- * session manager might return can never leak into the picker. One session can
- * exist twice - as a live file and as the archived copy pi kept writing after
- * the archive - and must still be one row, so the live copy (listed first, and
- * the one that keeps changing) wins over its archived twin.
+ * Fork/clone or subagent, from file content. A fork copies the parent's
+ * entries, so its first non-header entry keeps the parent's id; a subagent
+ * starts a fresh session (even when `inherit_context` feeds it parent text),
+ * so its first entry id differs. A missing parent file falls back to
+ * `subagent`, which keeps internal sessions out of the default view.
  */
-export async function loadSessions(scope: Scope, cwd: string): Promise<SessionRecord[]> {
-	const cwdDir = cwdDirName(cwd);
-	const [live, archived] = await Promise.all([
-		scope === "current" ? listAllIn([join(sessionsRoot(), cwdDir)]) : listAllEverywhere(),
-		scope === "current" ? listAllIn([join(archiveRoot(), cwdDir)]) : listAllIn(archiveDirs()),
-	]);
-	const index = readIndex();
+function relationOf(info: SessionInfo): SessionRelation | undefined {
+	const parentPath = info.parentSessionPath;
+	if (!parentPath) return undefined;
+	const parentFile = twinPaths(parentPath).find((path) => existsSync(path));
+	if (parentFile === undefined) return "subagent";
+	const childId = firstEntryId(info.path);
+	const parentId = firstEntryId(parentFile);
+	if (childId === undefined && parentId === undefined) return "fork";
+	return childId !== undefined && childId === parentId ? "fork" : "subagent";
+}
+
+/** Deduplicate infos into records: live paths win, then session ids. */
+function toRecords(infos: readonly SessionInfo[], index: Record<string, IndexEntry>): SessionRecord[] {
 	const records = new Map<string, SessionRecord>();
 	const seenIds = new Set<string>();
-	for (const info of [...live, ...archived]) {
+	for (const info of infos) {
 		if (underRoot(sessionsRoot(), info.path) === undefined && underRoot(archiveRoot(), info.path) === undefined) {
 			continue;
 		}
@@ -152,9 +171,70 @@ export async function loadSessions(scope: Scope, cwd: string): Promise<SessionRe
 			// A live file has no archive date of its own; a stale archived twin's
 			// index entry must not stand in for it.
 			archiveDate: archived ? archivedAt(index, info) : info.modified,
+			relation: relationOf(info),
 		});
 	}
-	return [...records.values()].sort((a, b) => b.info.modified.getTime() - a.info.modified.getTime());
+	return [...records.values()];
+}
+
+function byModified(a: SessionRecord, b: SessionRecord): number {
+	return b.info.modified.getTime() - a.info.modified.getTime();
+}
+
+/**
+ * Load every session the scope covers, live and archived, newest first.
+ *
+ * Live sessions are published as `SessionManager.listAll` discovers them, then
+ * archive directories are merged one at a time, so the picker can render rows
+ * while the scope is still loading. Only paths under the live or archive root
+ * are kept. A session can exist twice - as a live file and as the archived copy
+ * pi kept writing after the archive - and must still be one row, so the live
+ * copy (listed first) wins over its archived twin.
+ */
+export async function loadSessions(
+	scope: Scope,
+	cwd: string,
+	options: LoadSessionsOptions = {},
+): Promise<SessionRecord[]> {
+	const { signal, onProgress } = options;
+	const cwdDir = cwdDirName(cwd);
+	const index = readIndex();
+	let live: SessionInfo[] = [];
+	let archived: SessionInfo[] = [];
+
+	const publish = (progress: LoadProgress): void => {
+		if (!onProgress) return;
+		onProgress(toRecords([...live, ...archived], index).sort(byModified), progress);
+	};
+
+	const liveProgress: ListProgress = (loaded, total, partial) => {
+		if (partial === undefined) return;
+		live = [...partial];
+		publish({ loaded, total, phase: "live" });
+	};
+
+	signal?.throwIfAborted();
+	if (scope === "current") {
+		live = await listAllInDir(join(sessionsRoot(), cwdDir), liveProgress, signal);
+	} else {
+		try {
+			live = await SessionManager.listAll(liveProgress, signal);
+		} catch {
+			signal?.throwIfAborted();
+			live = [];
+		}
+	}
+	publish({ loaded: live.length, total: live.length, phase: "live" });
+
+	const dirs = scope === "current" ? [join(archiveRoot(), cwdDir)] : archiveDirs();
+	for (const [dirIndex, dir] of dirs.entries()) {
+		signal?.throwIfAborted();
+		archived = [...archived, ...await listAllInDir(dir, undefined, signal)];
+		publish({ loaded: dirIndex + 1, total: dirs.length, phase: "archive" });
+	}
+
+	signal?.throwIfAborted();
+	return toRecords([...live, ...archived], index).sort(byModified);
 }
 
 /**
@@ -200,8 +280,56 @@ interface SubtreeStats {
 	latest: number;
 }
 
+/** Subtree sizes over every loaded record, hidden or not. */
+export function descendantCounts(records: SessionRecord[]): Map<SessionRecord, number> {
+	const byPath = new Map<string, SessionRecord>();
+	for (const record of records) byPath.set(resolve(record.info.path), record);
+	const children = new Map<SessionRecord, SessionRecord[]>();
+	for (const record of records) {
+		const parent = findParent(record, byPath);
+		if (parent === undefined) continue;
+		const siblings = children.get(parent);
+		if (siblings) siblings.push(record);
+		else children.set(parent, [record]);
+	}
+	const counts = new Map<SessionRecord, number>();
+	const onPath = new Set<SessionRecord>();
+	const measure = (record: SessionRecord): number => {
+		const done = counts.get(record);
+		if (done !== undefined) return done;
+		onPath.add(record);
+		let count = 0;
+		for (const child of children.get(record) ?? []) {
+			if (onPath.has(child)) continue;
+			count += 1 + measure(child);
+		}
+		onPath.delete(record);
+		counts.set(record, count);
+		return count;
+	};
+	for (const record of records) measure(record);
+	return counts;
+}
+
+/** Paths of records that have at least one child in this set. */
+export function parentPaths(records: SessionRecord[]): Set<string> {
+	const byPath = new Map<string, SessionRecord>();
+	for (const record of records) byPath.set(resolve(record.info.path), record);
+	const paths = new Set<string>();
+	for (const record of records) {
+		const parent = findParent(record, byPath);
+		if (parent !== undefined) paths.add(parent.info.path);
+	}
+	return paths;
+}
+
 /** Build the nested forest: roots by the active sort, children only when expanded. */
-function forest(ordered: SessionRecord[], expand: ReadonlySet<string>, sort: SortMode): TreeRow[] {
+function forest(
+	ordered: SessionRecord[],
+	expand: ReadonlySet<string>,
+	sort: SortMode,
+	counts?: ReadonlyMap<SessionRecord, number>,
+): TreeRow[] {
 	const byPath = new Map<string, SessionRecord>();
 	for (const record of ordered) byPath.set(resolve(record.info.path), record);
 
@@ -258,10 +386,12 @@ function forest(ordered: SessionRecord[], expand: ReadonlySet<string>, sort: Sor
 	function emit(record: SessionRecord, depth: number, isLast: boolean, ancestorContinues: boolean[]): void {
 		if (emitted.has(record)) return;
 		emitted.add(record);
+		const visible = stats.get(record)?.count ?? 0;
 		rows.push({
 			record,
 			depth,
-			descendantCount: stats.get(record)?.count ?? 0,
+			descendantCount: counts?.get(record) ?? visible,
+			visibleDescendantCount: visible,
 			isLast,
 			ancestorContinues,
 		});
@@ -304,18 +434,25 @@ function forest(ordered: SessionRecord[], expand: ReadonlySet<string>, sort: Sor
  */
 export function buildRows(
 	records: SessionRecord[],
-	options: { query: ParsedQuery; sort: SortMode; expand: ReadonlySet<string> },
+	options: {
+		query: ParsedQuery;
+		sort: SortMode;
+		expand: ReadonlySet<string>;
+		/** Totals over every loaded record, including rows this view hides. */
+		descendantCounts?: ReadonlyMap<SessionRecord, number>;
+	},
 ): TreeRow[] {
-	const { query, sort, expand } = options;
+	const { query, sort, expand, descendantCounts: counts } = options;
 	const ordered = sortRecords(records, query, sort);
 	if (!query.empty) {
 		return ordered.map((record) => ({
 			record,
 			depth: 0,
-			descendantCount: 0,
+			descendantCount: counts?.get(record) ?? 0,
+			visibleDescendantCount: 0,
 			isLast: true,
 			ancestorContinues: [],
 		}));
 	}
-	return forest(ordered, expand, sort);
+	return forest(ordered, expand, sort, counts);
 }

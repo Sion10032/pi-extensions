@@ -4,7 +4,7 @@
 
 ## 功能概览
 
-- **统一浏览**：一个 `/sessions` 界面里同时看活跃会话与归档会话，支持模糊搜索、`"整段短语"`、`re:<pattern>` 正则、树形折叠、`current`/`all` 作用域、命名过滤、路径显示与三种排序。
+- **统一浏览**：一个 `/sessions` 界面里同时看活跃会话与归档会话，支持模糊搜索、`"整段短语"`、`re:<pattern>` 正则、三段式展开、`current`/`all` 作用域、命名过滤、路径显示与三种排序。
 - **picker 内归档**：`ctrl+a` 归档/取消归档选中会话，所有动作都先显示确认行。归档父会话时，整棵 `parentSession` 子树（子代理会话、fork 及其后代）一起移动。
 - **整棵子树恢复**：`enter` 恢复归档会话；归档文件先移回活跃目录，再切换过去。根会话与全部派生会话一起回来。
 - **当前会话延迟归档**：pi 正在写入的文件不能移动，所以 `/archive`、`archive_session` 工具和 picker 对当前会话的 `ctrl+a` 只记录“关闭后归档”，等会话关闭时才移动；`/reload` 不移动。
@@ -59,11 +59,12 @@ pi -e ./packages/pi-sessions
 | 键 | 行为 |
 | --- | --- |
 | `tab` | 切换作用域：`current`（当前目录）↔ `all`（所有目录） |
-| `ctrl+s` | 切换排序：`threaded` → `recent` → `relevance`；只在树内重排，子会话仍默认折叠 |
+| `ctrl+e` | 循环切换统一展开预设：`Collapsed` → `Children` → `All` → `Collapsed`（搜索框有文字时也可用） |
+| `←` / `→` | 移动搜索框光标；当前不绑定单行展开/收起 |
+| `ctrl+s` | 切换排序：`threaded` → `recent` → `relevance`；只在树内重排，展开由预设控制 |
 | `ctrl+n` | 只看命名会话，再按一次显示全部 |
 | `ctrl+p` | 显示/隐藏会话文件路径 |
 | `ctrl+t` | 切换归档筛选：`active` → `archived` → `all` |
-| `ctrl+e` | 展开/折叠选中行的子树（折叠时父行消息后显示 `↳N`） |
 | `ctrl+a` | 归档/取消归档选中会话（先确认）；当前会话为延迟归档，已归档的当前会话不做任何操作 |
 | `enter` | 恢复选中会话（归档会话会先移回活跃目录） |
 | `esc` | 取消（确认状态下取消确认） |
@@ -73,18 +74,20 @@ pi -e ./packages/pi-sessions
 
 说明：
 
-- 默认状态为 `scope: current`、`sort: threaded`、归档筛选 `active`、`named: All`、`path: off`；当前会话高亮，归档行带暗色 `[archived]`。
-- 标题栏与原生会话选择器一致：左侧 `Sessions (Current Folder)` / `Sessions (All)`，右侧 `◉ Current Folder | ○ All  Name: All  Sort: Threaded  Filter: Active`；`> ` 过滤框，选中行高亮，命名会话用 warning 色，当前会话用 accent 色。
-- 有过滤词时，列表退化为扁平结果列表（与原生 picker 一致）；没有过滤词时，无论切换哪种排序，子会话都保持嵌套并默认折叠。
-- 折叠时父行消息后显示 `↳N` 后代数（即使标题很长也不会被截掉）；展开后子行使用原生 `├─` / `└─` 树形前缀。
+- 默认状态为 `scope: current`、`sort: threaded`、`expand: Collapsed`、归档筛选 `active`、`named: All`、`path: off`；当前会话高亮，归档行带暗色 `[archived]`。
+- 标题栏与原生会话选择器一致：左侧 `Sessions (Current Folder)` / `Sessions (All)`，右侧 `◉ Current Folder | ○ All  Expand: Collapsed  Name: All  Sort: Threaded  Filter: Active`（窄终端会保留左侧标题并截断右侧）；`> ` 过滤框，选中行高亮，命名会话用 warning 色，当前会话用 accent 色。
+- 三段式展开是**统一预设**：按 `ctrl+e` 循环 `Collapsed` → `Children` → `All` → `Collapsed`。`Collapsed` 全部收起；`Children` 自动展开 fork/clone 子树并隐藏 subagent 行；`All` 展开所有层级并显示 subagent。默认和 Children 下都不会露出 subagent，只有 All 会。当前版本单行展开/收起暂未绑定按键，先用三段式预设（内部实现保留，选定键位后可恢复）。
+- 有过滤词时，列表退化为扁平结果列表（与原生 picker 一致）；subagent 行跟随展开预设：默认/Children 不出现，只有 All 才会被搜出来。
+- 折叠时父行消息后显示 `↳N` 后代数；这个数字包含当前预设隐藏的 subagent（即使标题很长也不会被截掉）。展开后子行使用原生 `├─` / `└─` 树形前缀。
 - `ctrl+a` 的所有动作都会先显示确认行；确认行位于标题下方、使用 error 红色，且不显示标题（长标题不会把动作文字挤掉）：`Archive this session?`、`Archive this session and N child sessions?`、`Unarchive this session?`、`Archive the current session when it closes?`；`enter` 确认，`esc` 或 `ctrl+c` 取消。
+- `tab` 切换作用域时，列表会立即清空并显示 `Loading… 已加载/总数`，live 会话按 `SessionManager.listAll` 的进度分批出现，归档目录随后逐个合并；再次切换或关闭 picker 会中止上一次加载。
 - `tab`、`ctrl+s`、`ctrl+n`、`ctrl+p` 使用 pi 的键位名 `tui.input.tab`、`app.session.toggleSort`、`app.session.toggleNamedFilter`、`app.session.togglePath`，可在 `~/.pi/agent/keybindings.json` 里改；`ctrl+t`、`ctrl+e`、`ctrl+a` 是本插件直接读取的按键，不可改。
 
 ## 归档语义
 
 **物理移动。** 归档把 `<agent>/sessions/<cwd-slug>/x.jsonl` 移到 `<agent>/sessions-archive/<cwd-slug>/x.jsonl`，取消归档做反向移动。归档状态只由目录位置推导，不写进会话文件，也不依赖索引。
 
-**整棵子树。** 递归按会话 header 里的 `parentSession` 进行：父会话所在目录中，凡是 `parentSession` 指向该会话或其后代的 `.jsonl`，都属于这棵子树。pi 在文件格式上无法区分“子代理会话”和“`/fork` 派生的会话”，两者一律当作派生会话一起归档，这正是为了避免在原生 `/resume` 里留下孤儿根节点。恢复同样整棵移回；只恢复某个子会话时，父会话仍留在归档里，树形视图会按“孪生路径”继续把它挂在归档父节点下。**正在写入的会话除外**：当前会话的文件，以及它自己的派生会话，永远不随着祖先会话的归档而移动（连同伴生文件一起留在原地），否则 pi 会继续往旧路径写，会话就从 `/resume` 里消失了。
+**整棵子树。** 递归按会话 header 里的 `parentSession` 进行：父会话所在目录中，凡是 `parentSession` 指向该会话或其后代的 `.jsonl`，都属于这棵子树，归档时一律一起移动，避免在原生 `/resume` 里留下孤儿根节点。header 本身只有 `parentSession`，但文件内容能区分：fork/clone 复制父会话的 entry，所以首条非 header entry 的 `id` 与父会话相同；subagent 是全新 entry，`id` 不同（`inherit_context` 只是把父文本拼进 prompt，resume 复用 subagent 自己的文件，都不复制父 entry）。picker 用这个区别控制展开、搜索和 `Children` 预设，归档语义不受影响。恢复同样整棵移回；只恢复某个子会话时，父会话仍留在归档里，树形视图会按“孪生路径”继续把它挂在归档父节点下。**正在写入的会话除外**：当前会话的文件，以及它自己的派生会话，永远不随着祖先会话的归档而移动（连同伴生文件一起留在原地），否则 pi 会继续往旧路径写，会话就从 `/resume` 里消失了。
 
 **当前会话延迟归档。** pi 还在写当前会话的文件，移动它会丢内容，因此：
 

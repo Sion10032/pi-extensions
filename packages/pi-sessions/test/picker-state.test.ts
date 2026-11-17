@@ -23,6 +23,8 @@ const rec = (path: string, over: Partial<SessionRecord> = {}): SessionRecord => 
 
 const parent = rec("/w/a.jsonl", { info: { ...rec("/w/a.jsonl").info, name: "root" } });
 const child = rec("/w/b.jsonl", { info: { ...rec("/w/b.jsonl").info, name: "kid", parentSessionPath: "/w/a.jsonl" } });
+const fork = rec("/w/f.jsonl", { relation: "fork", info: { ...rec("/w/f.jsonl").info, name: "fork", parentSessionPath: "/w/a.jsonl" } });
+const subagent = rec("/w/s.jsonl", { relation: "subagent", info: { ...rec("/w/s.jsonl").info, name: "sub", parentSessionPath: "/w/a.jsonl" } });
 const archived = rec("/w/c.jsonl", { archived: true });
 
 test("defaults: active filter, current scope, threaded sort, collapsed", () => {
@@ -33,6 +35,84 @@ test("defaults: active filter, current scope, threaded sort, collapsed", () => {
 	assert.deepEqual(state.rows().map((r) => r.record.info.path), [parent.info.path]);
 	assert.equal(state.rows()[0].descendantCount, 1);
 	assert.deepEqual(state.counts, { active: 2, archived: 1 });
+});
+
+test("the expansion preset steps and clamps", () => {
+	const state = new PickerState([parent, fork], undefined, "/work");
+	assert.equal(state.expansionMode, "collapsed");
+	state.stepExpansion(1);
+	assert.equal(state.expansionMode, "children");
+	state.stepExpansion(1);
+	assert.equal(state.expansionMode, "all");
+	state.stepExpansion(1);
+	assert.equal(state.expansionMode, "all");
+	state.stepExpansion(-1);
+	assert.equal(state.expansionMode, "children");
+	state.stepExpansion(-1);
+	assert.equal(state.expansionMode, "collapsed");
+	state.stepExpansion(-1);
+	assert.equal(state.expansionMode, "collapsed");
+});
+
+test("cycleExpansion wraps and clears row overrides", () => {
+	const state = new PickerState([parent, child], parent.info.path, "/work");
+	state.toggleExpand();
+	state.cycleExpansion();
+	assert.equal(state.expansionMode, "children");
+	assert.equal(state.isExpanded(parent.info.path), true);
+	state.cycleExpansion();
+	assert.equal(state.expansionMode, "all");
+	state.cycleExpansion();
+	assert.equal(state.expansionMode, "collapsed");
+	assert.equal(state.isExpanded(parent.info.path), false);
+});
+
+test("children mode expands fork/clone rows and hides subagents", () => {
+	const state = new PickerState([parent, fork, subagent], undefined, "/work");
+	state.stepExpansion(1);
+	const rows = state.rows();
+	assert.deepEqual(rows.map((row) => row.record.info.path), [parent.info.path, fork.info.path]);
+	assert.equal(rows[0].descendantCount, 2);
+	assert.equal(rows[0].visibleDescendantCount, 1);
+
+	state.stepExpansion(1);
+	const all = state.rows();
+	assert.deepEqual(all.map((row) => row.record.info.path), [parent.info.path, fork.info.path, subagent.info.path]);
+});
+
+test("subagent visibility follows the preset in search results", () => {
+	const state = new PickerState([parent, fork, subagent], undefined, "/work");
+	state.setQuery("sub");
+	state.stepExpansion(1);
+	assert.deepEqual(state.rows(), []);
+	state.stepExpansion(1);
+	assert.deepEqual(state.rows().map((row) => row.record.info.path), [subagent.info.path]);
+});
+
+test("manual ctrl+e overrides the preset without changing its label", () => {
+	const state = new PickerState([parent, fork, subagent], parent.info.path, "/work");
+	state.stepExpansion(1);
+	assert.deepEqual(state.rows().map((row) => row.record.info.path), [parent.info.path, fork.info.path]);
+	state.toggleExpand();
+	assert.deepEqual(state.rows().map((row) => row.record.info.path), [parent.info.path]);
+	assert.equal(state.expansionMode, "children");
+
+	// The next preset step resets the override uniformly.
+	state.stepExpansion(1);
+	assert.deepEqual(state.rows().map((row) => row.record.info.path), [parent.info.path, fork.info.path, subagent.info.path]);
+});
+
+test("beginLoading keeps the selected path until its record arrives", () => {
+	const state = new PickerState([parent, child], parent.info.path, "/work");
+	state.beginLoading();
+	assert.equal(state.loading, true);
+	assert.deepEqual(state.rows(), []);
+	state.setRecords([parent]);
+	assert.equal(state.selectedRow()?.record.info.path, parent.info.path);
+	state.setLoadingProgress(1, 2, "live");
+	state.finishLoading([parent, child]);
+	assert.equal(state.loading, false);
+	assert.equal(state.selectedRow()?.record.info.path, parent.info.path);
 });
 
 test("toggleExpand reveals children and persists across filters", () => {

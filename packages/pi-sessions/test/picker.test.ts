@@ -49,16 +49,25 @@ test("render shows the header, filter and rows", () => {
 	assert.match(text, /ctrl\+t/);
 });
 
-test("ctrl+e expands the selected parent and rerenders children", () => {
-	const { picker } = makePicker([parent, child], parent.info.path);
+test("ctrl+e cycles the global expansion preset and wraps", () => {
+	const { picker, state } = makePicker([parent, child], parent.info.path);
+	assert.doesNotMatch(picker.render(80).join("\n"), /kid/);
 	picker.handleInput("\u0005");
+	assert.equal(state.expansionMode, "children");
 	assert.match(picker.render(80).join("\n"), /kid/);
+	picker.handleInput("\u0005");
+	assert.equal(state.expansionMode, "all");
+	picker.handleInput("\u0005");
+	assert.equal(state.expansionMode, "collapsed");
+	assert.doesNotMatch(picker.render(80).join("\n"), /kid/);
 });
 
-test("ctrl+e expands under the Kitty keyboard protocol", () => {
-	const { picker } = makePicker([parent, child], parent.info.path);
+test("ctrl+e cycles under the Kitty keyboard protocol", () => {
+	const { picker, state } = makePicker([parent, child], parent.info.path);
 	picker.handleInput("\u001b[101;5u"); // ctrl+e as CSI-u
-	assert.match(picker.render(80).join("\n"), /kid/);
+	assert.equal(state.expansionMode, "children");
+	picker.handleInput("\u001b[101;5u");
+	assert.equal(state.expansionMode, "all");
 });
 
 test("ctrl+a archives under the Kitty keyboard protocol", () => {
@@ -106,7 +115,7 @@ test("the selected row background covers the right metadata", () => {
 	assert.doesNotMatch(backgroundLines[0], /\u001b\[0m/);
 });
 
-test("expanded children use the native tree prefix", () => {
+test("the children preset uses the native tree prefix", () => {
 	const { picker } = makePicker([parent, child], parent.info.path);
 	picker.handleInput("\u0005");
 	const kidLine = picker.render(80).find((line) => line.includes("kid"));
@@ -206,9 +215,10 @@ test("the confirmation prompt omits a long title", () => {
 test("ctrl+a counts hidden descendants when a query flattens the list", () => {
 	const { picker, state, calls } = makePicker([parent, child], "/w/x.jsonl");
 	state.setQuery("root");
-	// The flat view reports no descendants of its own: the row cannot be trusted.
+	// The row still reports the full subtree total; archiving never trusts the
+	// flat view's visible row count.
 	assert.equal(state.rows().length, 1);
-	assert.equal(state.rows()[0].descendantCount, 0);
+	assert.equal(state.rows()[0].descendantCount, 1);
 
 	picker.handleInput("\u0001");
 
@@ -248,6 +258,65 @@ test("esc cancels", () => {
 	const { picker, calls } = makePicker([parent], undefined);
 	picker.handleInput("\u001b");
 	assert.deepEqual(calls, ["cancel"]);
+});
+
+test("ctrl+e changes the preset while the search has text", () => {
+	const { picker, state } = makePicker([parent], undefined);
+	picker.handleInput("abc");
+	picker.handleInput("\u0005");
+	assert.equal(state.query, "abc");
+	assert.equal(state.expansionMode, "children");
+});
+
+test("plain left/right no longer expand rows", () => {
+	const { picker, state } = makePicker([parent, child], parent.info.path);
+	picker.handleInput("\u001b[C"); // right
+	assert.doesNotMatch(picker.render(80).join("\n"), /kid/);
+	assert.equal(state.expansionMode, "collapsed");
+	picker.handleInput("\u001b[D"); // left
+	assert.doesNotMatch(picker.render(80).join("\n"), /kid/);
+	assert.equal(state.expansionMode, "collapsed");
+});
+
+test("left/right edit the query when the search has text", () => {
+	const { picker, state } = makePicker([parent], undefined);
+	picker.handleInput("abc");
+	picker.handleInput("\u001b[D");
+	picker.handleInput("X");
+	assert.equal(state.query, "abXc");
+	assert.equal(state.expansionMode, "collapsed");
+});
+
+test("the header shows the expansion preset", () => {
+	const { picker } = makePicker([parent], undefined);
+	assert.match(picker.render(120).join("\n"), /Expand: Collapsed/);
+	picker.handleInput("\u0005");
+	assert.match(picker.render(120).join("\n"), /Expand: Children/);
+});
+
+test("children preset hides subagent rows and All reveals them", () => {
+	const fork: SessionRecord = { ...rec("/w/f.jsonl", { name: "fork", parentSessionPath: "/w/a.jsonl" }), relation: "fork" };
+	const sub: SessionRecord = { ...rec("/w/s.jsonl", { name: "subkid", parentSessionPath: "/w/a.jsonl" }), relation: "subagent" };
+	const { picker } = makePicker([parent, fork, sub], undefined);
+	picker.handleInput("\u0005");
+	const children = picker.render(80).join("\n");
+	assert.match(children, /fork/);
+	assert.doesNotMatch(children, /subkid/);
+	picker.handleInput("\u0005");
+	assert.match(picker.render(80).join("\n"), /subkid/);
+});
+
+test("the loading line replaces the empty state while records stream in", () => {
+	const { picker, state } = makePicker([], undefined);
+	state.beginLoading();
+	const loading = picker.render(80).join("\n");
+	assert.match(loading, /Loading sessions/);
+	assert.doesNotMatch(loading, /No sessions/);
+	state.setRecords([parent]);
+	state.setLoadingProgress(1, 2, "live");
+	assert.match(picker.render(80).join("\n"), /Loading sessions… 1\/2/);
+	state.finishLoading([parent]);
+	assert.doesNotMatch(picker.render(80).join("\n"), /Loading sessions/);
 });
 
 test("tab switches the scope and asks the owner to reload it", () => {

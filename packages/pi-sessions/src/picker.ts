@@ -14,6 +14,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	type Component,
+	type KeyId,
 	type TUI,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -28,7 +29,19 @@ import type { Scope, SessionRecord } from "./types.ts";
 /** Rows rendered at once, matching the native session picker. */
 const MAX_VISIBLE = 10;
 
-const FOOTER_LINE = "ctrl+e expand · ctrl+a archive · enter resume · esc cancel";
+/**
+ * Per-row expand/collapse keys. Deliberately unset while no dedicated pair is
+ * chosen; `setSelectedExpanded` and the handler stay so assigning a pair here
+ * restores the feature. `whenSearchEmpty` keeps plain arrows from stealing
+ * cursor movement if they are chosen later. Candidates:
+ *   { collapse: "alt+-", expand: "alt+=" }
+ *   { collapse: "left", expand: "right", whenSearchEmpty: true }
+ */
+const ROW_EXPAND_KEYS:
+	| { collapse: KeyId; expand: KeyId; whenSearchEmpty?: boolean }
+	| undefined = undefined;
+
+const FOOTER_LINE = "ctrl+e mode · ctrl+a archive · enter resume · esc cancel";
 
 /** A pending archive action, waiting for Enter to confirm. */
 interface Confirmation {
@@ -74,6 +87,12 @@ function truncatePlain(text: string, maxWidth: number): string {
 		result += char;
 	}
 	return `${result}…`;
+}
+
+function expansionLabel(state: PickerState): string {
+	if (state.expansionMode === "collapsed") return "Collapsed";
+	if (state.expansionMode === "children") return "Children";
+	return "All";
 }
 
 function archiveFilterLabel(state: PickerState): string {
@@ -135,7 +154,7 @@ export class SessionPicker implements Component {
 			return;
 		}
 		if (matchesKey(data, "ctrl+e")) {
-			state.toggleExpand();
+			state.cycleExpansion();
 			tui.requestRender();
 			return;
 		}
@@ -167,6 +186,24 @@ export class SessionPicker implements Component {
 			state.togglePath();
 			tui.requestRender();
 			return;
+		}
+
+		// Per-row expand/collapse is intentionally unbound until a dedicated key
+		// pair is chosen; the handler and PickerState methods stay in place.
+		if (ROW_EXPAND_KEYS !== undefined) {
+			const searchEmpty = this.input.getValue().length === 0;
+			if (!ROW_EXPAND_KEYS.whenSearchEmpty || searchEmpty) {
+				if (matchesKey(data, ROW_EXPAND_KEYS.expand)) {
+					state.setSelectedExpanded(true);
+					tui.requestRender();
+					return;
+				}
+				if (matchesKey(data, ROW_EXPAND_KEYS.collapse)) {
+					state.setSelectedExpanded(false);
+					tui.requestRender();
+					return;
+				}
+			}
 		}
 
 		if (kb.matches(data, "tui.select.up")) {
@@ -211,7 +248,10 @@ export class SessionPicker implements Component {
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const { state, theme } = this.props;
-		const lines = [...this.renderHeader(safeWidth), ...this.input.render(safeWidth), ""];
+		const lines = [...this.renderHeader(safeWidth), ...this.input.render(safeWidth)];
+		lines.push(this.props.state.loading
+			? theme.fg("dim", truncateToWidth(`  ${this.loadingText()}`, safeWidth, "…"))
+			: "");
 
 		const rows = state.rows();
 		// `selectedRow()` re-anchors the selection after a filter change; calling
@@ -231,16 +271,7 @@ export class SessionPicker implements Component {
 			? selectedIndex - start
 			: -1;
 
-		if (rows.length === 0) {
-			const empty = this.props.state.query.trim() !== ""
-				|| state.archiveFilter !== "active"
-				|| state.namedOnly
-				? "No sessions match the current filter."
-				: state.scope === "current"
-					? "No sessions in current folder. Press Tab to view all."
-					: "No sessions found.";
-			lines.push(theme.fg("dim", truncateToWidth(`  ${empty}`, safeWidth, "…")));
-		} else {
+		if (rows.length > 0) {
 			for (const [offset, row] of this.visibleRows.entries()) {
 				lines.push(this.renderRow(row, selectedIndex === start + offset, safeWidth));
 			}
@@ -250,10 +281,29 @@ export class SessionPicker implements Component {
 					: `${rows.length} sessions`;
 				lines.push(theme.fg("dim", truncateToWidth(`  (${position})`, safeWidth, "")));
 			}
+		} else if (!state.loading) {
+			const empty = this.props.state.query.trim() !== ""
+				|| state.archiveFilter !== "active"
+				|| state.namedOnly
+				? "No sessions match the current filter."
+				: state.scope === "current"
+					? "No sessions in current folder. Press Tab to view all."
+					: "No sessions found.";
+			lines.push(theme.fg("dim", truncateToWidth(`  ${empty}`, safeWidth, "…")));
 		}
 
 		lines.push("");
 		return lines;
+	}
+
+	private loadingText(): string {
+		const { state } = this.props;
+		if (state.loadingPhase === "archive" && state.loadingTotal > 0) {
+			return `Loading archived folders… ${state.loadingLoaded}/${state.loadingTotal}`;
+		}
+		const label = state.scope === "all" ? "Loading all sessions" : "Loading sessions";
+		const progress = state.loadingTotal > 0 ? ` ${state.loadingLoaded}/${state.loadingTotal}` : "";
+		return `${label}…${progress}`;
 	}
 
 	invalidate(): void {
@@ -295,8 +345,10 @@ export class SessionPicker implements Component {
 			: `${theme.fg("muted", "○ Current Folder | ")}${theme.fg("accent", "◉ All")}`;
 		const name = `${theme.fg("muted", "Name: ")}${theme.fg("accent", state.namedOnly ? "Named" : "All")}`;
 		const sort = `${theme.fg("muted", "Sort: ")}${theme.fg("accent", sortLabel(state))}`;
+		const expand = `${theme.fg("muted", "Expand: ")}${theme.fg("accent", expansionLabel(state))}`;
 		const filter = `${theme.fg("muted", "Filter: ")}${theme.fg("accent", archiveFilterLabel(state))}`;
-		const right = truncateToWidth(`${scope}  ${name}  ${sort}  ${filter}`, width, "");
+		// Keep at least a title stub: the filter row is wide at 80 columns.
+		const right = truncateToWidth(`${scope}  ${expand}  ${name}  ${sort}  ${filter}`, Math.max(0, width - 22), "");
 		const availableLeft = Math.max(0, width - visibleWidth(right) - 1);
 		const left = truncateToWidth(title, availableLeft, "");
 		const spacing = Math.max(0, width - visibleWidth(left) - visibleWidth(right));
@@ -315,10 +367,10 @@ export class SessionPicker implements Component {
 			`${theme.fg("accent", key)} ${theme.fg("muted", label)}`;
 		const hint1 = `${keyHint("tab", "scope")}${sep}${theme.fg("muted", 're:<pattern> regex · "phrase" exact')}`;
 		const hint2 = [
+			keyHint("ctrl+e", "mode"),
+			keyHint("ctrl+t", "filter"),
 			keyHint("ctrl+s", "sort"),
 			keyHint("ctrl+n", "named"),
-			keyHint("ctrl+t", "filter"),
-			keyHint("ctrl+e", "expand"),
 			keyHint("ctrl+a", "archive"),
 			keyHint("ctrl+p", `path (${state.showPath ? "on" : "off"})`),
 		].join(sep);

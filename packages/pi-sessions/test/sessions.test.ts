@@ -14,10 +14,11 @@ const CWD = "/work/project";
 const ID = "01a0aaaa-0000-7000-8000-000000000001";
 const CHILD = "01a0bbbb-0000-7000-8000-000000000002";
 const OTHER = "01a0cccc-0000-7000-8000-000000000003";
-const header = (id: string, parent?: string, name?: string) =>
+const header = (id: string, parent?: string, name?: string, firstEntry = `m_${id}`) =>
 	[
 		JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd: CWD, ...(parent ? { parentSession: parent } : {}) }),
-		...(name ? [JSON.stringify({ type: "session_info", id: "s1", parentId: null, timestamp: "t", name })] : []),
+		JSON.stringify({ type: "model_change", id: firstEntry, parentId: null, timestamp: "t", provider: "test", modelId: "test" }),
+		...(name ? [JSON.stringify({ type: "session_info", id: `s_${id}`, parentId: firstEntry, timestamp: "t", name })] : []),
 	];
 
 let live: string;
@@ -41,6 +42,33 @@ test("loadSessions merges live and archived sessions for the current scope", asy
 	const records = await loadSessions("current", CWD);
 	assert.equal(records.length, 2);
 	assert.equal(records.filter((r) => r.archived).length, 2);
+});
+
+test("loadSessions tells copied forks from fresh subagents", async () => {
+	const parent = join(live, `a_${ID}.jsonl`);
+	const fork = join(live, `b_${CHILD}.jsonl`);
+	const sub = join(live, `c_${OTHER}.jsonl`);
+	const sharedFirstEntry = `m_${ID}`;
+	writeFileSync(parent, `${header(ID, undefined, "root", sharedFirstEntry).join("\n")}\n`);
+	writeFileSync(fork, `${header(CHILD, parent, "fork", sharedFirstEntry).join("\n")}\n`);
+	writeFileSync(sub, `${header(OTHER, parent, "sub", `m_${OTHER}`).join("\n")}\n`);
+
+	const records = await loadSessions("current", CWD);
+	const byPath = new Map(records.map((record) => [record.info.path, record]));
+	assert.equal(byPath.get(parent)?.relation, undefined);
+	assert.equal(byPath.get(fork)?.relation, "fork");
+	assert.equal(byPath.get(sub)?.relation, "subagent");
+});
+
+test("loadSessions streams partial records while it loads", async () => {
+	seed();
+	const sizes: number[] = [];
+	const records = await loadSessions("current", CWD, {
+		onProgress: (partial) => sizes.push(partial.length),
+	});
+	assert.equal(records.length, 2);
+	assert.ok(sizes.length > 0);
+	assert.equal(sizes.at(-1), 2);
 });
 
 test("archiveDate falls back to modified when index.json is corrupt", async () => {

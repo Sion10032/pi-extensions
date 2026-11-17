@@ -12,15 +12,17 @@
  */
 import { resolve } from "node:path";
 
-import { twinPaths } from "./paths.ts";
 import { parseQuery } from "./search.ts";
 import {
 	buildRows,
+	descendantCounts,
 	filterRecords,
+	parentPaths,
 	type TreeRow,
 } from "./sessions.ts";
 import type {
 	ArchiveFilter,
+	ExpansionMode,
 	Scope,
 	SessionRecord,
 	SortMode,
@@ -57,8 +59,15 @@ export class PickerState {
 	private archiveFilterValue: ArchiveFilter = "active";
 	private namedOnlyValue = false;
 	private showPathValue = false;
-	/** Paths of parents whose children are shown; empty means fully collapsed. */
-	private readonly expanded = new Set<string>();
+	/** Global expansion preset; arrows step it, `ctrl+e` overrides one row. */
+	private expansionModeValue: ExpansionMode = "collapsed";
+	/** Per-row overrides of the preset, keyed by session path. */
+	private readonly expandOverrides = new Map<string, boolean>();
+	/** True while the owner is streaming a freshly loaded scope. */
+	private loadingValue = false;
+	private loadingPhaseValue: "live" | "archive" = "live";
+	private loadingLoadedValue = 0;
+	private loadingTotalValue = 0;
 
 	constructor(records: SessionRecord[], currentFile: string | undefined, currentCwd: string) {
 		this.records = records;
@@ -102,15 +111,96 @@ export class PickerState {
 	}
 
 	/**
-	 * Expand or collapse the selected row. Rows without descendants are left
-	 * alone: collapsing a leaf would store a key the tree never consults.
+	 * Cycle the global expansion preset: collapsed -> children -> all ->
+	 * collapsed. This is the single-key `ctrl+e` behavior; per-row overrides are
+	 * cleared so the preset applies uniformly.
 	 */
+	cycleExpansion(): void {
+		const modes: readonly ExpansionMode[] = ["collapsed", "children", "all"];
+		this.expansionModeValue = modes[(modes.indexOf(this.expansionModeValue) + 1) % modes.length]!;
+		this.expandOverrides.clear();
+	}
+
+	/**
+	 * Directional preset step, retained for a future two-key preset control.
+	 * The picker currently binds only `cycleExpansion` to `ctrl+e`.
+	 */
+	stepExpansion(delta: number): void {
+		const modes: readonly ExpansionMode[] = ["collapsed", "children", "all"];
+		const current = modes.indexOf(this.expansionModeValue);
+		const next = modes[Math.max(0, Math.min(modes.length - 1, current + delta))];
+		if (next === this.expansionModeValue) return;
+		this.expansionModeValue = next;
+		this.expandOverrides.clear();
+	}
+
+	/**
+	 * Set the selected row's expansion directly. The picker has no key bound to
+	 * this while dedicated row keys are undecided; the method and overrides stay
+	 * so re-enabling is a small change.
+	 */
+	setSelectedExpanded(expanded: boolean): void {
+		const row = this.selectedRow();
+		if (row === undefined || row.visibleDescendantCount === 0) return;
+		const path = row.record.info.path;
+		if (this.isExpanded(path) === expanded) return;
+		this.expandOverrides.set(path, expanded);
+	}
+
+	/** Toggle the selected row; retained for a future row key binding. */
 	toggleExpand(): void {
 		const row = this.selectedRow();
-		if (row === undefined || row.descendantCount === 0) return;
-		const path = row.record.info.path;
-		if (this.expanded.has(path)) this.expanded.delete(path);
-		else this.expanded.add(path);
+		if (row === undefined || row.visibleDescendantCount === 0) return;
+		this.setSelectedExpanded(!this.isExpanded(row.record.info.path));
+	}
+
+	/** Clear the list and show the loading line while the owner reloads. */
+	beginLoading(): void {
+		this.records = [];
+		this.loadingValue = true;
+		this.loadingPhaseValue = "live";
+		this.loadingLoadedValue = 0;
+		this.loadingTotalValue = 0;
+		this.selectedIndex = 0;
+	}
+
+	setLoadingProgress(loaded: number, total: number, phase: "live" | "archive"): void {
+		this.loadingPhaseValue = phase;
+		this.loadingLoadedValue = loaded;
+		this.loadingTotalValue = total;
+	}
+
+	finishLoading(records: SessionRecord[]): void {
+		this.records = records;
+		this.loadingValue = false;
+		this.loadingPhaseValue = "live";
+		this.loadingLoadedValue = 0;
+		this.loadingTotalValue = 0;
+	}
+
+	failLoading(): void {
+		this.loadingValue = false;
+	}
+
+	/** Records the current view can show: subagents only in the `all` preset. */
+	private visibleRecords(): SessionRecord[] {
+		if (this.expansionModeValue === "all") return this.records;
+		return this.records.filter((record) => record.relation !== "subagent");
+	}
+
+	/** The preset's base expansion plus the user's per-row overrides. */
+	private effectiveExpanded(visible: SessionRecord[]): Set<string> {
+		const expanded = new Set<string>();
+		if (this.expansionModeValue === "all") {
+			for (const path of parentPaths(this.records)) expanded.add(path);
+		} else if (this.expansionModeValue === "children") {
+			for (const path of parentPaths(visible)) expanded.add(path);
+		}
+		for (const [path, value] of this.expandOverrides) {
+			if (value) expanded.add(path);
+			else expanded.delete(path);
+		}
+		return expanded;
 	}
 
 	/** Move the selection by `delta` rows, stopping at the list boundaries. */
@@ -124,26 +214,35 @@ export class PickerState {
 
 	/**
 	 * The rows to render, with the selection re-anchored to the current filter.
-	 * A selected path that is no longer visible is clamped by index so the
-	 * cursor never jumps past the end of a shorter list.
+	 * While a reload is streaming records, a selected path that has not arrived
+	 * yet is kept instead of being clobbered by the first partial batch.
 	 */
 	rows(): TreeRow[] {
 		const query = parseQuery(this.queryText);
+		const visible = this.visibleRecords();
 		const rows = buildRows(
-			filterRecords(this.records, {
+			filterRecords(visible, {
 				archiveFilter: this.archiveFilterValue,
 				namedOnly: this.namedOnlyValue,
 				query,
 			}),
-			{ query, sort: this.sortMode, expand: this.expanded },
+			{
+				query,
+				sort: this.sortMode,
+				expand: this.effectiveExpanded(visible),
+				descendantCounts: descendantCounts(this.records),
+			},
 		);
 		if (rows.length === 0) {
-			this.selectedKey = undefined;
-			this.selectedIndex = 0;
+			if (!this.loadingValue) {
+				this.selectedKey = undefined;
+				this.selectedIndex = 0;
+			}
 			return rows;
 		}
 		const found = rows.findIndex((row) => resolve(row.record.info.path) === this.selectedKey);
-		this.select(rows, found >= 0 ? found : Math.min(this.selectedIndex, rows.length - 1));
+		if (found >= 0) this.select(rows, found);
+		else if (!this.loadingValue) this.select(rows, Math.min(this.selectedIndex, rows.length - 1));
 		return rows;
 	}
 
@@ -159,41 +258,12 @@ export class PickerState {
 
 	/**
 	 * Sessions below `record` across every loaded record - not just the rows on
-	 * screen. A query, the named filter and the recent sort flatten the list and
-	 * hide children, so the row's own `descendantCount` cannot answer how much
-	 * an archive would move. Parent links are matched through twins, the way the
-	 * loader resolves them, and a visited set keeps a parent cycle finite.
+	 * screen. A query, the named filter, the recent sort and a hidden subagent
+	 * subtree can all leave rows off screen, so the row's own count cannot
+	 * answer how much an archive would move.
 	 */
 	descendantCount(record: SessionRecord): number {
-		const byPath = new Map<string, SessionRecord>();
-		for (const candidate of this.records) byPath.set(resolve(candidate.info.path), candidate);
-		const children = new Map<string, SessionRecord[]>();
-		for (const candidate of this.records) {
-			const parentPath = candidate.info.parentSessionPath;
-			if (!parentPath) continue;
-			const parentKey = twinPaths(parentPath)
-				.map((path) => resolve(path))
-				.find((key) => byPath.has(key));
-			if (parentKey === undefined) continue;
-			const siblings = children.get(parentKey);
-			if (siblings) siblings.push(candidate);
-			else children.set(parentKey, [candidate]);
-		}
-		const rootKey = resolve(record.info.path);
-		const seen = new Set<string>([rootKey]);
-		const queue = [rootKey];
-		let count = 0;
-		while (queue.length > 0) {
-			const key = queue.shift()!;
-			for (const child of children.get(key) ?? []) {
-				const childKey = resolve(child.info.path);
-				if (seen.has(childKey)) continue;
-				seen.add(childKey);
-				count++;
-				queue.push(childKey);
-			}
-		}
-		return count;
+		return descendantCounts(this.records).get(record) ?? 0;
 	}
 
 	/**
@@ -210,7 +280,27 @@ export class PickerState {
 
 	/** True when the row at `path` has its children rendered. */
 	isExpanded(path: string): boolean {
-		return this.expanded.has(path);
+		return this.effectiveExpanded(this.visibleRecords()).has(path);
+	}
+
+	get expansionMode(): ExpansionMode {
+		return this.expansionModeValue;
+	}
+
+	get loading(): boolean {
+		return this.loadingValue;
+	}
+
+	get loadingPhase(): "live" | "archive" {
+		return this.loadingPhaseValue;
+	}
+
+	get loadingLoaded(): number {
+		return this.loadingLoadedValue;
+	}
+
+	get loadingTotal(): number {
+		return this.loadingTotalValue;
 	}
 
 	get scope(): Scope {

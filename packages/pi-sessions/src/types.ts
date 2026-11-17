@@ -21,10 +21,27 @@ export type SortMode = "threaded" | "recent" | "relevance";
 /** Which archive states the picker shows. */
 export type ArchiveFilter = "active" | "archived" | "all";
 
+/**
+ * How the picker expands the tree:
+ * - `collapsed` shows no children,
+ * - `children` expands fork/clone subtrees and hides subagent rows,
+ * - `all` expands everything, subagents included.
+ */
+export type ExpansionMode = "collapsed" | "children" | "all";
+
+/**
+ * How a child session came to be, from its file content:
+ * - `fork`: a clone/fork copied this session's parent entries,
+ * - `subagent`: a fresh subagent session (possibly with textual inherited context).
+ */
+export type SessionRelation = "fork" | "subagent";
+
 /** A loaded session file plus what the archive tree knows about it. */
 export interface SessionRecord {
 	info: SessionInfo;
 	archived: boolean;
 	/** Archive time from the index, falling back to `info.modified`. */
 	archiveDate: Date;
+	/** Set on child sessions only; a root has no relation. */
+	relation?: SessionRelation;
 }
