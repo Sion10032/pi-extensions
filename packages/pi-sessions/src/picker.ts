@@ -43,13 +43,20 @@ const ROW_EXPAND_KEYS:
 
 const FOOTER_LINE = "ctrl+e mode · ctrl+a archive · enter resume · esc cancel";
 
-/** A pending archive action, waiting for Enter to confirm. */
-interface Confirmation {
-	record: SessionRecord;
-	action: ArchiveAction;
-	/** Descendant count captured when the prompt was opened. */
-	children: number;
-}
+/** A pending archive or delete action, waiting for Enter to confirm. */
+type Confirmation =
+	| {
+		kind: "archive";
+		record: SessionRecord;
+		action: ArchiveAction;
+		/** Descendant count captured when the prompt was opened. */
+		children: number;
+	  }
+	| {
+		kind: "delete";
+		record: SessionRecord;
+		children: number;
+	  };
 
 export interface SessionPickerProps {
 	state: PickerState;
@@ -64,6 +71,13 @@ export interface SessionPickerProps {
 	 * way the native picker hides rename when it has no handler.
 	 */
 	onRename?(record: SessionRecord, name: string): void;
+	/**
+	 * Delete the record together with its subtree. Optional like `onRename`: no
+	 * handler means the picker does not claim `ctrl+d`.
+	 */
+	onDelete?(record: SessionRecord): void;
+	/** Explain why `ctrl+d` did nothing: the running session, or its subtree. */
+	onDeleteRefused?(reason: "current" | "protected"): void;
 	/** Archive or unarchive the record; the owner refreshes the rows. */
 	onToggleArchive(record: SessionRecord): void;
 	onCancel(): void;
@@ -159,9 +173,10 @@ export class SessionPicker implements Component {
 		// rest must not leak into the filter or the list.
 		if (this.confirming !== undefined) {
 			if (kb.matches(data, "tui.select.confirm")) {
-				const { record } = this.confirming;
+				const pending = this.confirming;
 				this.confirming = undefined;
-				this.props.onToggleArchive(record);
+				if (pending.kind === "archive") this.props.onToggleArchive(pending.record);
+				else this.props.onDelete?.(pending.record);
 			} else if (kb.matches(data, "tui.select.cancel") || matchesKey(data, "ctrl+c")) {
 				this.confirming = undefined;
 			}
@@ -184,6 +199,23 @@ export class SessionPicker implements Component {
 		}
 		if (matchesKey(data, "ctrl+a")) {
 			this.archiveSelected();
+			tui.requestRender();
+			return;
+		}
+		// Delete follows the native picker: `ctrl+d` always, and
+		// `ctrl+backspace` only while the filter is empty, so the same key can
+		// still delete a word inside the query.
+		if (this.props.onDelete !== undefined && kb.matches(data, "app.session.delete")) {
+			this.deleteSelected();
+			tui.requestRender();
+			return;
+		}
+		if (
+			this.props.onDelete !== undefined
+			&& kb.matches(data, "app.session.deleteNoninvasive")
+			&& this.input.getValue().length === 0
+		) {
+			this.deleteSelected();
 			tui.requestRender();
 			return;
 		}
@@ -372,12 +404,36 @@ export class SessionPicker implements Component {
 		if (action === "none") return;
 		// Count every loaded descendant, not the visible rows: a query or the
 		// recent sort flattens the list and would archive children silently.
-		this.confirming = { record: row.record, action, children: state.descendantCount(row.record) };
+		this.confirming = { kind: "archive", record: row.record, action, children: state.descendantCount(row.record) };
+	}
+
+	/** `ctrl+d`: ask first, and never for the session pi is still writing. */
+	private deleteSelected(): void {
+		const { state } = this.props;
+		const row = state.selectedRow();
+		if (row === undefined) return;
+		const action = state.deleteAction();
+		if (action === "none") {
+			this.props.onDeleteRefused?.("current");
+			return;
+		}
+		if (action === "protected") {
+			this.props.onDeleteRefused?.("protected");
+			return;
+		}
+		// Count every loaded descendant, as the archive prompt does: a query or a
+		// hidden subagent subtree must not make the number lie.
+		this.confirming = { kind: "delete", record: row.record, children: state.descendantCount(row.record) };
 	}
 
 	/** The title is deliberately omitted: a long title must not hide the action. */
 	private confirmationPrompt(): string {
-		const { action, children } = this.confirming!;
+		const pending = this.confirming!;
+		if (pending.kind === "delete") {
+			const scope = pending.children > 0 ? ` this session and ${pending.children} child sessions?` : " this session?";
+			return `Delete${scope} enter confirm · esc/ctrl+c cancel`;
+		}
+		const { action, children } = pending;
 		if (action === "deferred-archive") {
 			return "Archive the current session when it closes? enter confirm · esc/ctrl+c cancel";
 		}

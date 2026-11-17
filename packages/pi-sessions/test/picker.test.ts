@@ -18,7 +18,7 @@ const rec = (path: string, over: Partial<SessionRecord["info"]> = {}): SessionRe
 
 const theme = { fg: (_c: string, s: string) => s, bg: (_c: string, s: string) => s, bold: (s: string) => s } as unknown as Theme;
 const tui = { requestRender() {} } as unknown as TUI;
-const kb = { matches: (data: string, action: string) => ({ "tui.select.confirm": "\r", "tui.select.cancel": "\u001b", "tui.select.up": "\u001b[A", "tui.select.down": "\u001b[B", "tui.select.pageUp": "\u001b[5~", "tui.select.pageDown": "\u001b[6~", "tui.input.tab": "\t", "app.session.toggleSort": "\u0013", "app.session.toggleNamedFilter": "\u000e", "app.session.togglePath": "\u0010", "app.session.rename": "\u0012" } as Record<string, string>)[action] === data } as unknown as KeybindingsManager;
+const kb = { matches: (data: string, action: string) => ({ "tui.select.confirm": "\r", "tui.select.cancel": "\u001b", "tui.select.up": "\u001b[A", "tui.select.down": "\u001b[B", "tui.select.pageUp": "\u001b[5~", "tui.select.pageDown": "\u001b[6~", "tui.input.tab": "\t", "app.session.toggleSort": "\u0013", "app.session.toggleNamedFilter": "\u000e", "app.session.togglePath": "\u0010", "app.session.rename": "\u0012", "app.session.delete": "\u0004", "app.session.deleteNoninvasive": "\u001b[127;5u" } as Record<string, string>)[action] === data } as unknown as KeybindingsManager;
 
 function makePicker(records: SessionRecord[], current?: string, pickerTheme: Theme = theme) {
 	const calls: string[] = [];
@@ -28,6 +28,8 @@ function makePicker(records: SessionRecord[], current?: string, pickerTheme: The
 		state, theme: pickerTheme, tui, keybindings: kb,
 		onResume: (r) => calls.push(`resume:${r.info.path}`),
 		onRename: (r, name) => calls.push(`rename:${r.info.path}:${name}`),
+		onDelete: (r) => calls.push(`delete:${r.info.path}`),
+		onDeleteRefused: (reason) => calls.push(`refused:${reason}`),
 		onToggleArchive: (r) => calls.push(`toggle:${r.info.path}`),
 		onCancel: () => calls.push("cancel"),
 		onReload: (scope) => reloads.push(scope),
@@ -388,4 +390,52 @@ test("the rename panel swallows ctrl+a", () => {
 	assert.deepEqual(calls, []);
 	assert.match(picker.render(80).join("\n"), /Rename Session/);
 	assert.doesNotMatch(picker.render(80).join("\n"), /Archive this session/);
+});
+
+test("ctrl+d asks before deleting and enter confirms", () => {
+	const { picker, calls } = makePicker([parent], "/w/other.jsonl");
+	picker.handleInput("\u0004");
+	assert.match(picker.render(80).join("\n"), /Delete this session\?/);
+	assert.deepEqual(calls, []);
+	picker.handleInput("\r");
+	assert.deepEqual(calls, ["delete:/w/a.jsonl"]);
+});
+
+test("the delete prompt counts descendants", () => {
+	const { picker } = makePicker([parent, child], "/w/other.jsonl");
+	picker.handleInput("\u0004");
+	assert.match(picker.render(80).join("\n"), /Delete this session and 1 child sessions\?/);
+});
+
+test("esc cancels the delete confirmation", () => {
+	const { picker, calls } = makePicker([parent], "/w/other.jsonl");
+	picker.handleInput("\u0004");
+	picker.handleInput("\u001b");
+	assert.deepEqual(calls, []);
+});
+
+test("the current session is refused without a prompt", () => {
+	const { picker, calls } = makePicker([parent], parent.info.path);
+	picker.handleInput("\u0004");
+	assert.deepEqual(calls, ["refused:current"]);
+	assert.doesNotMatch(picker.render(80).join("\n"), /Delete this session\?/);
+});
+
+test("a subtree containing the current session is refused", () => {
+	const { picker, calls } = makePicker([parent, child], child.info.path);
+	// 当前是 child；它被折叠隐藏，选择落回根部 parent，而 parent 的子树包含当前会话
+	picker.handleInput("\u0004");
+	assert.deepEqual(calls, ["refused:protected"]);
+});
+
+test("ctrl+backspace only deletes when the query is empty", () => {
+	const { picker, calls } = makePicker([parent, child], "/w/other.jsonl");
+	picker.handleInput("\u001b[127;5u");
+	assert.deepEqual(calls, []);
+	assert.match(picker.render(80).join("\n"), /Delete this session and 1 child sessions\?/);
+	picker.handleInput("\u001b"); // 取消确认
+	picker.handleInput("k");     // 查询非空
+	picker.handleInput("\u001b[127;5u");
+	assert.deepEqual(calls, []);
+	assert.doesNotMatch(picker.render(80).join("\n"), /Delete this session/);
 });
