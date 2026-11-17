@@ -39,6 +39,7 @@ pi -e ./packages/pi-sessions
 | 名称 | 用法 | 说明 |
 | --- | --- | --- |
 | `/sessions` | `/sessions [active\|archived\|all]` | 打开会话列表；可选参数只决定初始的归档筛选，打开后仍可切换 |
+| `/undo` | `/undo` | 回滚到最新一条用户消息之前：原文回到输入框，尾部从会话文件里真正删掉，不新建子树 |
 | `/archive` | `/archive` | 把当前会话标记为“关闭后归档” |
 | `archive_session` | 工具调用，无参数 | 同上，供 agent 在用户说“工作完成了”时调用 |
 | `/resume` | 原生命令 | 仍可正常使用，只看活跃会话（归档会话不在其中） |
@@ -85,6 +86,14 @@ pi -e ./packages/pi-sessions
 - `ctrl+a` 的所有动作都会先显示确认行；确认行位于标题下方、使用 error 红色，且不显示标题（长标题不会把动作文字挤掉）：`Archive this session?`、`Archive this session and N child sessions?`、`Unarchive this session?`、`Archive the current session when it closes?`；`enter` 确认，`esc` 或 `ctrl+c` 取消。
 - `tab` 切换作用域时，列表会立即清空并显示 `Loading… 已加载/总数`，live 会话按 `SessionManager.listAll` 的进度分批出现，归档目录随后逐个合并；再次切换或关闭 picker 会中止上一次加载。
 - `tab`、`ctrl+s`、`ctrl+n`、`ctrl+p`、`ctrl+r`、`ctrl+d`、`ctrl+backspace` 使用 pi 的键位名 `tui.input.tab`、`app.session.toggleSort`、`app.session.toggleNamedFilter`、`app.session.togglePath`、`app.session.rename`、`app.session.delete`、`app.session.deleteNoninvasive`，可在 `~/.pi/agent/keybindings.json` 里改；`ctrl+t`、`ctrl+e`、`ctrl+a` 是本插件直接读取的按键，不可改。
+
+## `/undo` 语义
+
+**落点。** `/undo` 取当前分支上离 leaf 最近的一条用户消息，把 leaf 退回到它的上一条，并把这句原文放回输入框（编辑器里已经有草稿时不覆盖，只提示未写回）。分支优先级按 `getBranch()`，不是文件里最后一条：早前用 `/tree` 切过分支时，被放弃的那条线上的用户消息不会被选中。注入的 `custom_message`、bash 结果、压缩摘要都不算“用户消息”。
+
+**真删，不是旁支。** 该条及其之后的行会从会话 JSONL 里删掉（`header` 保留），随后用 `ctx.switchSession(同一文件)` 让宿主从文件重建会话。所以 `/tree` 里不会多出一条旁支，`/sessions` 里也不会多出一棵子树 —— 这正是它与 `/fork` 的区别：`/fork` 是新建子会话文件，`/undo` 是同一个文件往回退。
+
+**限制。** 只在空闲时可用：正在生成回复、或还有排队的 steering/follow-up 消息时会直接拒绝并提示等待。回滚到第一条用户消息会让会话变成空会话（只剩 header），之后可以照常开始新的对话。被删的内容**不可恢复**，写盘顺序在保留点之后的兄弟分支（早前 `/tree` 留下的那条线）以及它们携带的改名、label 也会一并消失。
 
 ## 归档语义
 
@@ -178,6 +187,7 @@ pi -e ./packages/pi-sessions
 - **`.superseded-*` 不自动清理**：被替换下来的旧归档文件需要手动删除。
 - **删除不可撤销**：插件没有自己的回收站，整批路径（会话文件、孪生副本、伴生目录、截图、子代理产物）一次交给系统 `trash`；`trash` 不存在或返回失败时全部回退为永久删除，此时无法恢复。删除同样不检测其他 pi 实例是否正在使用该会话。
 - **非 TUI 模式没有重命名与删除**：`ctx.ui.select` 的扁平列表只能选择恢复；需要在列表里改名或删除请用原生 `/resume`，本插件不提供 `/rename`、`/delete` 命令。
+- **`/undo` 会真的删掉尾部**：它是物理截断而不是 `/tree` 式旁支，被回滚的那一轮（以及写盘顺序在保留点之后的其它分支、改名、label）不可恢复；编辑器里已有草稿时不写回原文。请在空闲时使用。
 
 ## 隐私
 
@@ -229,6 +239,7 @@ nix develop -c env -u NODE_ENV npm install
 | `src/paths.ts` | 路径、目录名、标题与 session header 读取 |
 | `src/state.ts` | `index.json` 与 `pi-sessions-state.json` 的读写 |
 | `src/search.ts` | 查询解析与相关性排序 |
+| `src/undo.ts` | `/undo` 的目标选择、会话文件截断与重载 |
 | `src/types.ts` | 共享类型 |
 
 ## 手动验收清单
