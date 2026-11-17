@@ -107,6 +107,20 @@ function errorMessage(error: unknown): string {
 }
 
 /**
+ * Whether the host already replaced this command's session. Every `ctx` member
+ * is a getter that asserts the extension runner is still active, so reading one
+ * after a replacement throws.
+ */
+function isStale(ctx: ExtensionCommandContext): boolean {
+	try {
+		ctx.sessionManager.getSessionFile();
+		return false;
+	} catch {
+		return true;
+	}
+}
+
+/**
  * Rewind the current session to just before its newest user message: cut the
  * tail from the file, reload the session from it, and put the prompt back in
  * the editor when the editor is empty.
@@ -159,9 +173,11 @@ export async function runUndo(ctx: ExtensionCommandContext): Promise<void> {
 			ctx.ui.notify("Undo cancelled, session unchanged", "warning");
 		}
 	} catch (error) {
-		if (!swapped) {
-			writeAtomically(file, original);
-			ctx.ui.notify(`Undo failed: ${errorMessage(error)}`, "error");
-		}
+		// A throw can arrive before the reload starts or after the host already
+		// swapped in the truncated session; only the first may put the old bytes
+		// back. After a swap this context is stale, and so is its notice.
+		if (swapped || isStale(ctx)) return;
+		writeAtomically(file, original);
+		ctx.ui.notify(`Undo failed: ${errorMessage(error)}`, "error");
 	}
 }

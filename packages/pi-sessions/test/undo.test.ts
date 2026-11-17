@@ -194,11 +194,14 @@ interface FakeOptions {
 	switchError?: Error;
 	/** Make `setEditorText` throw, to exercise a post-replacement failure. */
 	editorError?: Error;
+	/** Throw after the session was replaced, leaving `ctx` stale like the host does. */
+	staleThrow?: Error;
 	sm?: SessionManager;
 }
 
 /** A command context that records what `runUndo` asked the host to do. */
 function fakeCtx(options: FakeOptions) {
+	let stale = false;
 	const notices: string[] = [];
 	const switches: { path: string; bytes: string }[] = [];
 	let editor = options.editor ?? "";
@@ -212,7 +215,11 @@ function fakeCtx(options: FakeOptions) {
 	};
 	const ctx = {
 		sessionManager: {
-			getSessionFile: () => options.file,
+			getSessionFile: () => {
+				// A replaced session leaves the old command context unusable.
+				if (stale) throw new Error("stale command context");
+				return options.file;
+			},
 			getBranch: () => options.sm?.getBranch() ?? [],
 		},
 		ui,
@@ -220,6 +227,10 @@ function fakeCtx(options: FakeOptions) {
 		hasPendingMessages: () => options.pending ?? false,
 		switchSession: async (path: string, switchOptions?: { withSession?: (next: unknown) => Promise<void> }) => {
 			switches.push({ path, bytes: readFileSync(path, "utf8") });
+			if (options.staleThrow) {
+				stale = true;
+				throw options.staleThrow;
+			}
 			if (options.switchError) throw options.switchError;
 			if (options.cancelled) return { cancelled: true };
 			await switchOptions?.withSession?.({ ui });
@@ -311,6 +322,22 @@ test("runUndo restores the file when the switch throws before replacing", async 
 	await runUndo(ctx);
 	assert.equal(readFileSync(file, "utf8"), before);
 	assert.match(notices[0] ?? "", /Undo failed: boom/);
+});
+
+test("runUndo keeps the truncation when the host throws after replacing the session", async () => {
+	const sm = open([
+		user("u1", null, "first"),
+		assistant("a1", "u1"),
+		user("u2", "a1", "second"),
+		assistant("a2", "u2"),
+	]);
+	const file = sm.getSessionFile()!;
+	const { ctx, notices } = fakeCtx({ file, sm, staleThrow: new Error("rebind failed") });
+	await runUndo(ctx);
+	// The host already made the truncated session live: restoring the old bytes
+	// would put the replaced turn back behind a session that no longer has it.
+	assert.equal(SessionManager.open(file).getLeafId(), "a1");
+	assert.equal(notices.some((notice) => notice.includes("Undo failed")), false);
 });
 
 test("runUndo keeps the truncation when only the post-switch step fails", async () => {
