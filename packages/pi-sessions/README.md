@@ -84,7 +84,7 @@ pi -e ./packages/pi-sessions
 - 折叠时父行消息后显示 `↳N` 后代数；这个数字包含当前预设隐藏的 subagent（即使标题很长也不会被截掉）。展开后子行使用原生 `├─` / `└─` 树形前缀。
 - `ctrl+a` 的所有动作都会先显示确认行；确认行位于标题下方、使用 error 红色，且不显示标题（长标题不会把动作文字挤掉）：`Archive this session?`、`Archive this session and N child sessions?`、`Unarchive this session?`、`Archive the current session when it closes?`；`enter` 确认，`esc` 或 `ctrl+c` 取消。
 - `tab` 切换作用域时，列表会立即清空并显示 `Loading… 已加载/总数`，live 会话按 `SessionManager.listAll` 的进度分批出现，归档目录随后逐个合并；再次切换或关闭 picker 会中止上一次加载。
-- `tab`、`ctrl+s`、`ctrl+n`、`ctrl+p`、`ctrl+r`、`ctrl+d` 使用 pi 的键位名 `tui.input.tab`、`app.session.toggleSort`、`app.session.toggleNamedFilter`、`app.session.togglePath`、`app.session.rename`、`app.session.delete`，可在 `~/.pi/agent/keybindings.json` 里改；`ctrl+t`、`ctrl+e`、`ctrl+a`、`ctrl+backspace` 是本插件直接读取的按键，不可改。
+- `tab`、`ctrl+s`、`ctrl+n`、`ctrl+p`、`ctrl+r`、`ctrl+d`、`ctrl+backspace` 使用 pi 的键位名 `tui.input.tab`、`app.session.toggleSort`、`app.session.toggleNamedFilter`、`app.session.togglePath`、`app.session.rename`、`app.session.delete`、`app.session.deleteNoninvasive`，可在 `~/.pi/agent/keybindings.json` 里改；`ctrl+t`、`ctrl+e`、`ctrl+a` 是本插件直接读取的按键，不可改。
 
 ## 归档语义
 
@@ -104,7 +104,9 @@ pi -e ./packages/pi-sessions
 
 **活跃副本优先。** 取消归档时若活跃树里已经有同名文件（归档后 pi 又写了活跃副本），不会移动任何东西，只提示 `A live copy already exists`，归档副本原样保留；用 `enter` 恢复则直接切到活跃副本。
 
-**重命名与删除。** 重命名只往会话文件追加一条 `session_info`（当前会话走 `pi.setSessionName`），不改 header、不移动文件，归档会话同样可改。删除以选中行为根：整棵 `parentSession` 子树、它们的伴生文件、以及另一棵树里的同名孪生副本一起删，并清掉 `index.json` 与 `pendingArchive` 里对应的条目；当前会话拒绝删除，子树含当前会话时整体拒绝。先试系统 `trash`，不可用或失败时回退为永久删除。**不做的事。** 不改写 `parentSession` 路径：父子链接在读取时按“孪生路径”解析。
+**重命名与删除。** 重命名只往会话文件追加一条 `session_info`（当前会话走 `pi.setSessionName`），不改 header、不移动文件，归档会话同样可改。删除以选中行为根：整棵 `parentSession` 子树、它们的伴生文件、以及另一棵树里的同名孪生副本一起删，并清掉 `index.json` 与 `pendingArchive` 里对应的条目；当前会话拒绝删除，子树含当前会话时整体拒绝。整个集合（会话文件、伴生目录、截图、子代理产物）一次交给系统 `trash`；`trash` 不可用或失败时逐个回退为永久删除，所以伴生文件和会话一样可恢复。
+
+**不做的事。** 不改写 `parentSession` 路径：父子链接在读取时按“孪生路径”解析。
 
 ## 归档布局
 
@@ -174,7 +176,7 @@ pi -e ./packages/pi-sessions
 - **多实例并发写**：`index.json` 与 `pi-sessions-state.json` 都是读-改-写加原子替换，并发时是 last-write-wins，后写的一方会覆盖先写条目的修改。同一时段最好只用一实例执行归档。
 - **同 id 的重复副本只显示一行**：会话既在活跃树又有归档副本时（归档后 pi 仍写了活跃文件），活跃副本优先，归档副本暂时隐藏，活跃副本消失后重新出现。
 - **`.superseded-*` 不自动清理**：被替换下来的旧归档文件需要手动删除。
-- **删除不可撤销**：插件没有自己的回收站，先按 `trash`（若系统装了）走系统回收站；`trash` 不存在或返回失败时回退为永久删除。删除同样不检测其他 pi 实例是否正在使用该会话。
+- **删除不可撤销**：插件没有自己的回收站，整批路径（会话文件、孪生副本、伴生目录、截图、子代理产物）一次交给系统 `trash`；`trash` 不存在或返回失败时全部回退为永久删除，此时无法恢复。删除同样不检测其他 pi 实例是否正在使用该会话。
 - **非 TUI 模式没有重命名与删除**：`ctx.ui.select` 的扁平列表只能选择恢复；需要在列表里改名或删除请用原生 `/resume`，本插件不提供 `/rename`、`/delete` 命令。
 
 ## 隐私

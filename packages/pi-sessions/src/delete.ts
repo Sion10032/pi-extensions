@@ -126,13 +126,16 @@ export function deleteSessionFile(file: string, options: DeleteOptions = {}): De
 	const deleted: string[] = [];
 	const failed: string[] = [];
 
-	// Trash handles the session files in one call; companions always go through
-	// `remove`, since a trash that accepts a directory is not guaranteed.
-	if (sessionFiles.length > 0) {
-		if (ops.trash(sessionFiles)) {
-			deleted.push(...sessionFiles);
+	// Trash handles the whole set in one call, companions included: a delete
+	// that can be undone should be undone for the subagent artifacts and
+	// screenshots too, not just for the JSONL files. A trash that cannot take
+	// directories fails on the call and every path is removed individually.
+	const all = [...sessionFiles, ...companions];
+	if (all.length > 0) {
+		if (ops.trash(all)) {
+			deleted.push(...all);
 		} else {
-			for (const path of sessionFiles) {
+			for (const path of all) {
 				try {
 					ops.remove(path);
 					deleted.push(path);
@@ -140,14 +143,6 @@ export function deleteSessionFile(file: string, options: DeleteOptions = {}): De
 					failed.push(path);
 				}
 			}
-		}
-	}
-	for (const path of companions) {
-		try {
-			ops.remove(path);
-			deleted.push(path);
-		} catch {
-			failed.push(path);
 		}
 	}
 

@@ -120,3 +120,24 @@ test("clears a pending archive for a deleted session", () => {
 	deleteSessionFile(parent, { ops: { trash: fakeTrash } });
 	assert.deepEqual(readPending(), {});
 });
+
+test("companions go to the trash together with the session files", () => {
+	const parent = seedTree();
+	const companion = join(live, file(ID).replace(".jsonl", ""));
+	mkdirSync(companion, { recursive: true });
+	const trashed: string[][] = [];
+	const ops = {
+		trash: (paths: string[]) => {
+			trashed.push(paths);
+			for (const path of paths) rmSync(path, { recursive: true, force: true });
+			return true;
+		},
+	};
+	const result = deleteSessionFile(parent, { ops });
+	assert.equal(trashed.length, 1);
+	// parent, child, companion directory: one trash call, so companions are as
+	// recoverable as the sessions they belong to.
+	assert.equal(trashed[0]!.length, 3);
+	assert.deepEqual(result.failed, []);
+	assert.equal(existsSync(companion), false);
+});
