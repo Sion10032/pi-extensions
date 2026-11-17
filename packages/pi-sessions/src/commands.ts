@@ -21,6 +21,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { archiveSessionFile, restoreSessionFile } from "./archive.ts";
+import { deleteSessionFile, type DeleteResult } from "./delete.ts";
 import {
 	displayTitle,
 	isArchived,
@@ -31,6 +32,7 @@ import {
 } from "./paths.ts";
 import { PickerState } from "./picker-state.ts";
 import { SessionPicker } from "./picker.ts";
+import { renameSessionFile } from "./rename.ts";
 import {
 	filterRecords,
 	loadSessions,
@@ -214,6 +216,58 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Rename a session from the picker. The session pi is running has to go
+ * through `pi.setSessionName`, which also refreshes the footer; every other
+ * one, archived included, gets a `session_info` entry in its own file.
+ */
+export function renameSession(
+	pi: ExtensionAPI,
+	ctx: SessionCtx,
+	record: SessionRecord,
+	name: string,
+): void {
+	const next = name.trim();
+	if (next === "") return;
+	try {
+		const currentFile = ctx.sessionManager.getSessionFile();
+		if (currentFile !== undefined && resolve(record.info.path) === resolve(currentFile)) {
+			pi.setSessionName(next);
+		} else {
+			renameSessionFile(record.info.path, next);
+		}
+	} catch (error) {
+		ctx.ui.notify(`Failed to rename session: ${errorMessage(error)}`, "error");
+	}
+}
+
+/**
+ * Delete a session and its whole subtree from the picker. The running session
+ * is passed as `protect`, so a delete that raced a selection change cannot take
+ * the file pi is still writing. The count in the notice is the sessions, not
+ * every companion file that went with them.
+ */
+export function deleteSession(ctx: SessionCtx, record: SessionRecord): DeleteResult {
+	const currentFile = ctx.sessionManager.getSessionFile();
+	try {
+		const result = deleteSessionFile(
+			record.info.path,
+			currentFile === undefined ? {} : { protect: [currentFile] },
+		);
+		if (result.refused) {
+			ctx.ui.notify("Cannot delete the currently active session", "warning");
+			return result;
+		}
+		const count = result.deleted.filter((path) => path.endsWith(".jsonl")).length;
+		const failed = result.failed.length > 0 ? ` (${result.failed.length} failed)` : "";
+		ctx.ui.notify(`Deleted ${count} session${count === 1 ? "" : "s"}${failed}`, "info");
+		return result;
+	} catch (error) {
+		ctx.ui.notify(`Failed to delete session: ${errorMessage(error)}`, "error");
+		return { deleted: [], failed: [], refused: false };
+	}
+}
+
 /** The terminal picker; resolves to the chosen record, or null when cancelled. */
 async function pickInTui(
 	pi: ExtensionAPI,
@@ -278,6 +332,21 @@ async function pickInTui(
 					})
 					.catch((error) => ctx.ui.notify(`Failed to archive session: ${errorMessage(error)}`, "error"));
 			},
+			onRename: (record, name) => {
+				renameSession(pi, ctx, record, name);
+				reload(state.scope);
+			},
+			onDelete: (record) => {
+				const result = deleteSession(ctx, record);
+				// A refused delete moved nothing; reloading would only redraw.
+				if (!result.refused) reload(state.scope);
+			},
+			onDeleteRefused: (reason) => ctx.ui.notify(
+				reason === "current"
+					? "Cannot delete the currently active session"
+					: "The current session is inside this session's tree",
+				"warning",
+			),
 			onReload: reload,
 		});
 	});

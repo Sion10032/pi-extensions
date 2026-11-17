@@ -8,6 +8,7 @@ import { archiveSessionFile } from "../src/archive.ts";
 import { formatOption, parseFilterArg, resolveResumeTarget, runSessions } from "../src/commands.ts";
 import piSessions from "../src/index.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { archiveRoot, cwdDirName, sessionsRoot } from "../src/paths.ts";
 import type { SessionRecord } from "../src/types.ts";
 
@@ -43,12 +44,22 @@ const theme = {
 const tui = { requestRender() {} };
 const keybindings = { matches: () => false };
 
+/** The slice of the picker the tests drive; the real component has more. */
+interface PickerHandle {
+	handleInput(data: string): void;
+	render(width: number): string[];
+}
+
 interface FakeCtxOptions {
 	mode: "tui" | "print";
 	/** Answer for `ui.select`; receives the rendered options. */
 	select?: (options: string[]) => string | undefined;
 	/** Called with the rendered picker in TUI mode. */
 	onPicker?: (rendered: string) => void;
+	/** Key sequence per keybinding action, handed to the picker. */
+	keybindings?: Record<string, string>;
+	/** Called with the live picker so a test can send keys to it. */
+	onPickerInstance?: (picker: PickerHandle) => void;
 }
 
 /** A command context that records what the command asked the host to do. */
@@ -56,6 +67,9 @@ function fakeCtx(options: FakeCtxOptions) {
 	const switched: string[] = [];
 	const notices: string[] = [];
 	let shown: string[] = [];
+	const bindings = options.keybindings === undefined
+		? keybindings
+		: { matches: (data: string, action: string) => options.keybindings?.[action] === data };
 	const ctx = {
 		mode: options.mode,
 		cwd: CWD,
@@ -69,11 +83,12 @@ function fakeCtx(options: FakeCtxOptions) {
 			custom: async (factory: (
 				stubTui: typeof tui,
 				stubTheme: typeof theme,
-				stubKeybindings: typeof keybindings,
+				stubKeybindings: typeof bindings,
 				done: (result: null) => void,
-			) => { render(width: number): string[] }) => {
-				const picker = factory(tui, theme, keybindings, () => {});
+			) => PickerHandle) => {
+				const picker = factory(tui, theme, bindings, () => {});
 				options.onPicker?.(picker.render(80).join("\n"));
+				options.onPickerInstance?.(picker);
 				return null;
 			},
 		},
@@ -225,4 +240,81 @@ test("the TUI picker applies the archive filter argument", async () => {
 	await runSessions({} as ExtensionAPI, archived.ctx, "archived");
 	assert.match(rendered, /\[archived\]/);
 	assert.deepEqual(archived.switched, []);
+});
+
+const makePi = () => {
+	const names: string[] = [];
+	return { pi: { setSessionName: (name: string) => names.push(name) } as unknown as ExtensionAPI, names };
+};
+
+test("dictating a new name in the picker writes it to the session file", async () => {
+	const live = liveDir();
+	const file = join(live, `a_${ID}.jsonl`);
+	writeFileSync(file, `${header}\n`);
+	let instance: { handleInput(data: string): void } | undefined;
+	const { ctx } = fakeCtx({
+		mode: "tui",
+		keybindings: { "app.session.rename": "\u0012", "tui.select.confirm": "\r" },
+		onPickerInstance: (picker) => { instance = picker; },
+	});
+	const { pi, names } = makePi();
+	await runSessions(pi, ctx, "");
+	instance!.handleInput("\u0012");
+	instance!.handleInput("t");
+	instance!.handleInput("\r");
+	assert.equal(SessionManager.open(file).getSessionName(), "t");
+	assert.deepEqual(names, []);
+});
+
+test("renaming the current session goes through pi.setSessionName", async () => {
+	const live = liveDir();
+	const file = join(live, `a_${ID}.jsonl`);
+	writeFileSync(file, `${header}\n`);
+	let instance: { handleInput(data: string): void } | undefined;
+	const { ctx } = fakeCtx({
+		mode: "tui",
+		keybindings: { "app.session.rename": "\u0012", "tui.select.confirm": "\r" },
+		onPickerInstance: (picker) => { instance = picker; },
+	});
+	(ctx.sessionManager as { getSessionFile: () => string }).getSessionFile = () => file;
+	const { pi, names } = makePi();
+	await runSessions(pi, ctx, "");
+	instance!.handleInput("\u0012");
+	instance!.handleInput("t");
+	instance!.handleInput("\r");
+	assert.deepEqual(names, ["t"]);
+});
+
+test("deleting from the picker removes the file, notifies and reloads", async () => {
+	const live = liveDir();
+	const file = join(live, `a_${ID}.jsonl`);
+	writeFileSync(file, `${header}\n`);
+	let instance: { handleInput(data: string): void; render(width: number): string[] } | undefined;
+	const { ctx, notices } = fakeCtx({
+		mode: "tui",
+		keybindings: { "app.session.delete": "\u0004", "tui.select.confirm": "\r" },
+		onPickerInstance: (picker) => { instance = picker; },
+	});
+	await runSessions({} as ExtensionAPI, ctx, "");
+	instance!.handleInput("\u0004");
+	instance!.handleInput("\r");
+	assert.equal(existsSync(file), false);
+	assert.deepEqual(notices, ["Deleted 1 session"]);
+});
+
+test("deleting the current session is refused with a warning", async () => {
+	const live = liveDir();
+	const file = join(live, `a_${ID}.jsonl`);
+	writeFileSync(file, `${header}\n`);
+	let instance: { handleInput(data: string): void } | undefined;
+	const { ctx, notices } = fakeCtx({
+		mode: "tui",
+		keybindings: { "app.session.delete": "\u0004" },
+		onPickerInstance: (picker) => { instance = picker; },
+	});
+	(ctx.sessionManager as { getSessionFile: () => string }).getSessionFile = () => file;
+	await runSessions({} as ExtensionAPI, ctx, "");
+	instance!.handleInput("\u0004");
+	assert.equal(existsSync(file), true);
+	assert.deepEqual(notices, ["Cannot delete the currently active session"]);
 });
