@@ -12,10 +12,12 @@
  */
 import { resolve } from "node:path";
 
+import { twinPaths } from "./paths.ts";
 import { parseQuery } from "./search.ts";
 import {
 	buildRows,
 	descendantCounts,
+	descendantRecords,
 	filterRecords,
 	parentPaths,
 	type TreeRow,
@@ -30,6 +32,9 @@ import type {
 
 /** What `ctrl+a` would do to the selected session. */
 export type ArchiveAction = "archive" | "deferred-archive" | "unarchive" | "none";
+
+/** What `ctrl+d` would do to the selected session. */
+export type DeleteAction = "delete" | "none" | "protected";
 
 /** `cycleSort` order, matching the native session picker. */
 const SORT_ORDER: readonly SortMode[] = ["threaded", "recent", "relevance"];
@@ -254,6 +259,35 @@ export class PickerState {
 	/** True for the session file the session manager is still writing. */
 	isCurrent(record: SessionRecord): boolean {
 		return this.currentPath !== undefined && resolve(record.info.path) === this.currentPath;
+	}
+
+	/**
+	 * True when `path` names the running session, in either tree: the current
+	 * session's archived twin cannot be deleted either, since the delete also
+	 * takes the live twin with it.
+	 */
+	private isCurrentPath(path: string): boolean {
+		if (this.currentPath === undefined) return false;
+		return twinPaths(path).some((twin) => resolve(twin) === this.currentPath);
+	}
+
+	/** True when the running session hangs somewhere below `record`. */
+	subtreeContainsCurrent(record: SessionRecord): boolean {
+		return descendantRecords(this.records, record).some((child) => this.isCurrentPath(child.info.path));
+	}
+
+	/**
+	 * What deleting the selected session would do. The running session is never
+	 * deleted - pi is still writing it - and a subtree that contains it is
+	 * refused whole, so a delete can never leave the live session without its
+	 * ancestors halfway through.
+	 */
+	deleteAction(): DeleteAction {
+		const row = this.selectedRow();
+		if (row === undefined) return "none";
+		if (this.isCurrentPath(row.record.info.path)) return "none";
+		if (this.subtreeContainsCurrent(row.record)) return "protected";
+		return "delete";
 	}
 
 	/**

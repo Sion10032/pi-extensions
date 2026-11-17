@@ -7,8 +7,9 @@ import { beforeEach, test } from "node:test";
 import { archiveSessionFile } from "../src/archive.ts";
 import { archiveRoot, cwdDirName, sessionsRoot } from "../src/paths.ts";
 import { parseQuery } from "../src/search.ts";
-import { buildRows, filterRecords, loadSessions } from "../src/sessions.ts";
+import { buildRows, descendantRecords, filterRecords, loadSessions } from "../src/sessions.ts";
 import { writeIndex } from "../src/state.ts";
+import type { SessionRecord } from "../src/types.ts";
 
 const CWD = "/work/project";
 const ID = "01a0aaaa-0000-7000-8000-000000000001";
@@ -173,4 +174,31 @@ test("a child of a non-last root is indented, not drawn in a continuation column
 	// Native flattenSessionTree appends `false` for a child of a depth-0 root;
 	// the renderer turns that into spaces, never a `│  ` column.
 	assert.deepEqual(childRow.ancestorContinues, [false]);
+});
+
+const sessionRecord = (path: string, parent?: string): SessionRecord => ({
+	info: {
+		path, id: path, cwd: CWD, created: new Date("2026-01-01T00:00:00Z"),
+		modified: new Date("2026-01-01T00:00:00Z"), messageCount: 1,
+		firstMessage: path, allMessagesText: path, ...(parent ? { parentSessionPath: parent } : {}),
+	},
+	archived: false, archiveDate: new Date("2026-01-01T00:00:00Z"),
+});
+
+test("descendantRecords returns every loaded descendant, excluding the root", () => {
+	const root = sessionRecord("/w/a.jsonl");
+	const kid = sessionRecord("/w/b.jsonl", "/w/a.jsonl");
+	const grand = sessionRecord("/w/c.jsonl", "/w/b.jsonl");
+	const other = sessionRecord("/w/d.jsonl");
+	const paths = descendantRecords([root, kid, grand, other], root).map((r) => r.info.path).sort();
+	assert.deepEqual(paths, [kid.info.path, grand.info.path].sort());
+	assert.deepEqual(descendantRecords([root, kid, grand], kid), [grand]);
+	assert.deepEqual(descendantRecords([root, kid, grand], grand), []);
+});
+
+test("descendantRecords follows a parent that lives in the other tree", () => {
+	const liveRoot = join(sessionsRoot(), cwdDirName(CWD), "a.jsonl");
+	const archivedKid = sessionRecord(join(archiveRoot(), cwdDirName(CWD), "b.jsonl"), liveRoot);
+	const root = sessionRecord(liveRoot);
+	assert.deepEqual(descendantRecords([root, archivedKid], root), [archivedKid]);
 });

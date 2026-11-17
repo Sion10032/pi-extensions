@@ -248,3 +248,38 @@ test("setRecords keeps the selection by path, not by index", () => {
 	assert.equal(state.selectedRow()?.record.info.path, older.info.path);
 	assert.deepEqual(state.counts, { active: 3, archived: 0 });
 });
+
+const livePath = join(sessionsRoot(), cwdDirName("/work"), "a.jsonl");
+const archiveTwin = join(archiveRoot(), cwdDirName("/work"), "a.jsonl");
+const liveRecord = rec(livePath);
+const archivedRecord = rec(archiveTwin, { archived: true });
+
+test("deleteAction is none without a selection", () => {
+	assert.equal(new PickerState([], undefined, "/work").deleteAction(), "none");
+});
+
+test("deleteAction refuses the current session", () => {
+	const state = new PickerState([liveRecord], livePath, "/work");
+	assert.equal(state.deleteAction(), "none");
+});
+
+test("deleteAction refuses a row whose twin is the current session", () => {
+	assert.equal(new PickerState([archivedRecord], livePath, "/work").deleteAction(), "none");
+});
+
+test("deleteAction protects a subtree that contains the current session", () => {
+	const parentRecord = rec(livePath);
+	const currentChild = rec(join(sessionsRoot(), cwdDirName("/work"), "b.jsonl"));
+	currentChild.info.parentSessionPath = livePath;
+	const state = new PickerState([parentRecord, currentChild], currentChild.info.path, "/work");
+	assert.equal(state.subtreeContainsCurrent(parentRecord), true);
+	assert.equal(state.deleteAction(), "protected");
+});
+
+test("deleteAction deletes an ordinary row", () => {
+	const sibling = rec(join(sessionsRoot(), cwdDirName("/work"), "b.jsonl"));
+	const state = new PickerState([liveRecord, sibling], livePath, "/work");
+	state.move(1);
+	assert.equal(state.subtreeContainsCurrent(sibling), false);
+	assert.equal(state.deleteAction(), "delete");
+});

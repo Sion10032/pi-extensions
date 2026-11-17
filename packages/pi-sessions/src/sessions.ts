@@ -311,6 +311,40 @@ export function descendantCounts(records: SessionRecord[]): Map<SessionRecord, n
 	return counts;
 }
 
+/**
+ * Every loaded record below `root`, in DFS order, the root excluded.
+ *
+ * The traversal uses the same parent resolution as `descendantCounts`, so a
+ * child whose parent lives in the other tree (the live/archive twin) still
+ * hangs off `root`. `onPath` breaks a cycle a corrupt `parentSession` could
+ * create.
+ */
+export function descendantRecords(records: SessionRecord[], root: SessionRecord): SessionRecord[] {
+	const byPath = new Map<string, SessionRecord>();
+	for (const record of records) byPath.set(resolve(record.info.path), record);
+	const children = new Map<SessionRecord, SessionRecord[]>();
+	for (const record of records) {
+		const parent = findParent(record, byPath);
+		if (parent === undefined) continue;
+		const siblings = children.get(parent);
+		if (siblings) siblings.push(record);
+		else children.set(parent, [record]);
+	}
+	const result: SessionRecord[] = [];
+	const onPath = new Set<SessionRecord>([root]);
+	const walk = (record: SessionRecord): void => {
+		for (const child of children.get(record) ?? []) {
+			if (onPath.has(child)) continue;
+			onPath.add(child);
+			result.push(child);
+			walk(child);
+			onPath.delete(child);
+		}
+	};
+	walk(root);
+	return result;
+}
+
 /** Paths of records that have at least one child in this set. */
 export function parentPaths(records: SessionRecord[]): Set<string> {
 	const byPath = new Map<string, SessionRecord>();
