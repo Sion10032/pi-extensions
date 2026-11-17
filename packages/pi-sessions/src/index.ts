@@ -19,6 +19,7 @@ import { Type } from "typebox";
 
 import { archiveSessionFile } from "./archive.ts";
 import { deferArchive, runSessions } from "./commands.ts";
+import { runUndo } from "./undo.ts";
 import { isArchived } from "./paths.ts";
 import { clearPending, readPending } from "./state.ts";
 
@@ -77,6 +78,10 @@ export default function piSessions(pi: ExtensionAPI): void {
 	pi.registerCommand("archive", {
 		description: "Archive the current session when it closes",
 		handler: async (_args, ctx) => deferArchive(pi, ctx),
+	});
+	pi.registerCommand("undo", {
+		description: "Rewind to just before your last message, without creating a fork",
+		handler: (_args, ctx) => runUndo(ctx),
 	});
 	pi.registerTool({
 		name: "archive_session",

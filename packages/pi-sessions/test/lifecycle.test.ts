@@ -45,11 +45,11 @@ const ctx = {
 	ui: { notify: () => {} },
 } as unknown as ExtensionContext;
 
-test("registers the tool, /archive and /sessions", () => {
+test("registers the tool, /archive, /sessions and /undo", () => {
 	const { pi, tools, commands } = fakePi();
 	piSessions(pi);
 	assert.deepEqual(tools, ["archive_session"]);
-	assert.deepEqual(commands.sort(), ["archive", "sessions"]);
+	assert.deepEqual(commands.sort(), ["archive", "sessions", "undo"]);
 });
 
 test("session_shutdown archives a pending current session", () => {
@@ -59,6 +59,22 @@ test("session_shutdown archives a pending current session", () => {
 	handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
 	assert.equal(existsSync(join(archiveRoot(), cwdDirName(CWD), `a_${ID}.jsonl`)), true);
 	assert.equal(existsSync(file), false);
+});
+
+/**
+ * Guards an invariant rather than a fix: a same-file switch spells the target
+ * differently from `getSessionFile()`, so the bare `===` above it does not
+ * match. Nothing moves anyway because `archiveSessionFile` resolves its
+ * `protect` keys, and the pending entry stays armed. This test fails if that
+ * protection ever stops resolving.
+ */
+test("a switch to a differently spelled path for the same file keeps the archive pending", () => {
+	const { pi, handlers } = fakePi();
+	piSessions(pi);
+	setPending(ID, { path: file, cwd: CWD, requestedAt: "2026-01-01T00:00:00.000Z" });
+	handlers.get("session_shutdown")!({ reason: "resume", targetSessionFile: `${live}/./a_${ID}.jsonl` }, ctx);
+	assert.equal(existsSync(join(archiveRoot(), cwdDirName(CWD), `a_${ID}.jsonl`)), false);
+	assert.notEqual(readPending()[ID], undefined);
 });
 
 test("reload does not move the file", () => {
