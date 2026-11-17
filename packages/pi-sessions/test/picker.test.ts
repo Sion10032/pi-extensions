@@ -55,6 +55,19 @@ test("ctrl+e expands the selected parent and rerenders children", () => {
 	assert.match(picker.render(80).join("\n"), /kid/);
 });
 
+test("ctrl+e expands under the Kitty keyboard protocol", () => {
+	const { picker } = makePicker([parent, child], parent.info.path);
+	picker.handleInput("\u001b[101;5u"); // ctrl+e as CSI-u
+	assert.match(picker.render(80).join("\n"), /kid/);
+});
+
+test("ctrl+a archives under the Kitty keyboard protocol", () => {
+	const { picker, calls } = makePicker([archived], undefined);
+	picker.handleInput("\u001b[116;5u"); // ctrl+t -> archived view
+	picker.handleInput("\u001b[97;5u"); // ctrl+a
+	assert.deepEqual(calls, ["toggle:/w/c.jsonl"]);
+});
+
 test("a long title keeps the descendant badge visible", () => {
 	const long = rec("/w/long.jsonl", { firstMessage: "x".repeat(200), allMessagesText: "x" });
 	const kid = rec("/w/kid.jsonl", { name: "kid", parentSessionPath: "/w/long.jsonl" });

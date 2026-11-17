@@ -10,6 +10,7 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	Input,
+	matchesKey,
 	truncateToWidth,
 	visibleWidth,
 	type Component,
@@ -26,11 +27,6 @@ import type { Scope, SessionRecord } from "./types.ts";
 
 /** Rows rendered at once, matching the native session picker. */
 const MAX_VISIBLE = 10;
-
-/** Raw control bytes the picker claims before `Input` sees them. */
-const ARCHIVE_FILTER_KEY = "\u0014"; // ctrl+t
-const EXPAND_KEY = "\u0005"; // ctrl+e
-const ARCHIVE_KEY = "\u0001"; // ctrl+a
 
 const HINT_LINE_1 = 'tab scope · re:<pattern> regex · "phrase" exact';
 const FOOTER_LINE = "ctrl+e expand · ctrl+a archive · enter resume · esc cancel";
@@ -114,19 +110,20 @@ export class SessionPicker implements Component {
 			return;
 		}
 
-		// Raw bytes first: ctrl+e and ctrl+a are line-editing keys for Input,
-		// and ctrl+t has no built-in binding of its own.
-		if (data === ARCHIVE_FILTER_KEY) {
+		// Claim the custom control keys before `Input` sees them. `matchesKey`
+		// covers both legacy control bytes and the Kitty keyboard protocol's
+		// CSI-u sequences, so ctrl+e/ctrl+a work in terminals that negotiate it.
+		if (matchesKey(data, "ctrl+t")) {
 			state.cycleArchiveFilter();
 			tui.requestRender();
 			return;
 		}
-		if (data === EXPAND_KEY) {
+		if (matchesKey(data, "ctrl+e")) {
 			state.toggleExpand();
 			tui.requestRender();
 			return;
 		}
-		if (data === ARCHIVE_KEY) {
+		if (matchesKey(data, "ctrl+a")) {
 			this.archiveSelected();
 			tui.requestRender();
 			return;
