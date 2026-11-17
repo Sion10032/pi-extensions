@@ -472,18 +472,25 @@ export class SessionPicker implements Component {
 		const keyHint = (key: string, label: string): string =>
 			`${theme.fg("dim", key)} ${theme.fg("muted", label)}`;
 		const hint1 = `${keyHint("tab", "scope")}${sep}${theme.fg("muted", 're:<pattern> regex · "phrase" exact')}`;
+		// Browsing keys and action keys each get a line: one combined line no
+		// longer fits 80 columns once rename and delete are listed.
 		const hint2 = [
 			keyHint("ctrl+e", "mode"),
 			keyHint("ctrl+t", "filter"),
 			keyHint("ctrl+s", "sort"),
 			keyHint("ctrl+n", "named"),
-			keyHint("ctrl+a", "archive"),
 			keyHint("ctrl+p", `path (${state.showPath ? "on" : "off"})`),
+		].join(sep);
+		const hint3 = [
+			keyHint("ctrl+a", "archive"),
+			keyHint("ctrl+r", "rename"),
+			keyHint("ctrl+d", "delete"),
 		].join(sep);
 		return [
 			titleLine,
 			truncateToWidth(hint1, width, "…"),
 			truncateToWidth(hint2, width, "…"),
+			truncateToWidth(hint3, width, "…"),
 		];
 	}
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 
 import { SessionPicker } from "../src/picker.ts";
@@ -438,4 +439,14 @@ test("ctrl+backspace only deletes when the query is empty", () => {
 	picker.handleInput("\u001b[127;5u");
 	assert.deepEqual(calls, []);
 	assert.doesNotMatch(picker.render(80).join("\n"), /Delete this session/);
+});
+
+test("the footer lists rename and delete on its own hint line", () => {
+	const { picker } = makePicker([parent], "/w/other.jsonl");
+	const lines = picker.render(80);
+	const hints = lines.filter((line) => line.includes("ctrl+"));
+	assert.ok(hints.length >= 2);
+	assert.match(lines.join("\n"), /ctrl\+r rename/);
+	assert.match(lines.join("\n"), /ctrl\+d delete/);
+	for (const line of lines) assert.ok(visibleWidth(line) <= 80, `line too wide: ${line}`);
 });
