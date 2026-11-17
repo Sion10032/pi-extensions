@@ -294,6 +294,23 @@ test("the header shows the expansion preset", () => {
 	assert.match(picker.render(120).join("\n"), /Expand: Children/);
 });
 
+test("shortcut keys use dim, not accent", () => {
+	const calls: Array<[string, string]> = [];
+	const spyTheme = {
+		fg: (color: string, text: string) => {
+			calls.push([color, text]);
+			return text;
+		},
+		bg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	} as unknown as Theme;
+	const { picker } = makePicker([parent], undefined, spyTheme);
+	picker.render(120);
+	assert.ok(calls.some(([color, text]) => color === "dim" && text === "ctrl+e"));
+	assert.ok(calls.some(([color, text]) => color === "dim" && text === "tab"));
+	assert.ok(!calls.some(([color, text]) => color === "accent" && text === "ctrl+e"));
+});
+
 test("children preset hides subagent rows and All reveals them", () => {
 	const fork: SessionRecord = { ...rec("/w/f.jsonl", { name: "fork", parentSessionPath: "/w/a.jsonl" }), relation: "fork" };
 	const sub: SessionRecord = { ...rec("/w/s.jsonl", { name: "subkid", parentSessionPath: "/w/a.jsonl" }), relation: "subagent" };

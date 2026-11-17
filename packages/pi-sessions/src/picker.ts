@@ -363,8 +363,9 @@ export class SessionPicker implements Component {
 		}
 
 		const sep = theme.fg("muted", " · ");
+		// Match the native picker: dim key names, muted descriptions.
 		const keyHint = (key: string, label: string): string =>
-			`${theme.fg("accent", key)} ${theme.fg("muted", label)}`;
+			`${theme.fg("dim", key)} ${theme.fg("muted", label)}`;
 		const hint1 = `${keyHint("tab", "scope")}${sep}${theme.fg("muted", 're:<pattern> regex · "phrase" exact')}`;
 		const hint2 = [
 			keyHint("ctrl+e", "mode"),
