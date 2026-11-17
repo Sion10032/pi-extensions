@@ -65,10 +65,16 @@ test("sessionIdFromFile returns the uuid suffix", () => {
 
 test("relativeTime formats from a fixed now", () => {
 	const now = Date.parse("2026-01-01T12:00:00Z");
-	assert.equal(relativeTime(new Date(now - 30_000), now), "just now");
-	assert.equal(relativeTime(new Date(now - 5 * 60_000), now), "5m ago");
-	assert.equal(relativeTime(new Date(now - 3 * 3_600_000), now), "3h ago");
-	assert.equal(relativeTime(new Date(now - 2 * 86_400_000), now), "2d ago");
+	assert.equal(relativeTime(new Date(now - 30_000), now), "now");
+	assert.equal(relativeTime(new Date(now - 5 * 60_000), now), " 5m");
+	assert.equal(relativeTime(new Date(now - 3 * 3_600_000), now), " 3h");
+	assert.equal(relativeTime(new Date(now - 2 * 86_400_000), now), "48h");
+	assert.equal(relativeTime(new Date(now - 71 * 3_600_000), now), "71h");
+	assert.equal(relativeTime(new Date(now - 72 * 3_600_000), now), " 3d");
+	assert.equal(relativeTime(new Date(now - 20 * 86_400_000), now), "20d");
+	assert.equal(relativeTime(new Date(now - 21 * 86_400_000), now), " 3w");
+	assert.equal(relativeTime(new Date(now - 51 * 7 * 86_400_000), now), "51w");
+	assert.equal(relativeTime(new Date(now - 52 * 7 * 86_400_000), now), " 1y");
 });
 
 test("readHeader reads cwd and parentSession", () => {

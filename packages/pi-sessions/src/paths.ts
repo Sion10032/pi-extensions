@@ -112,15 +112,27 @@ export function displayTitle(info: { name?: string; firstMessage: string }): str
 	return singleLine(info.firstMessage) || "(unnamed)";
 }
 
-/** Coarse age label, e.g. `just now`, `5m ago`, `3h ago`, `2d ago`. */
+/**
+ * Compact age label with a fixed two-digit number column: `now`, ` 5m`, `23h`,
+ * ` 3d`, ` 4w`, ` 1y`. No "ago" suffix.
+ */
 export function relativeTime(date: Date, now: number = Date.now()): string {
-	const sec = Math.floor((now - date.getTime()) / 1000);
-	if (sec < 60) return "just now";
-	const min = Math.floor(sec / 60);
-	if (min < 60) return `${min}m ago`;
-	const hr = Math.floor(min / 60);
-	if (hr < 24) return `${hr}h ago`;
-	return `${Math.floor(hr / 24)}d ago`;
+	const ms = Math.max(0, now - date.getTime());
+	const minutes = Math.floor(ms / 60_000);
+	if (minutes < 1) return "now";
+	if (minutes < 60) return `${twoDigits(minutes)}m`;
+	const hours = Math.floor(ms / 3_600_000);
+	if (hours < 72) return `${twoDigits(hours)}h`;
+	const days = Math.floor(ms / 86_400_000);
+	if (days < 21) return `${twoDigits(days)}d`;
+	const weeks = Math.floor(days / 7);
+	if (weeks < 52) return `${twoDigits(weeks)}w`;
+	return `${twoDigits(Math.floor(weeks / 52))}y`;
+}
+
+/** Right-align the number in a two-character column. */
+function twoDigits(value: number): string {
+	return String(value).padStart(2, " ");
 }
 
 export interface HeaderLite {
