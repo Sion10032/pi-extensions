@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { beforeEach, test } from "node:test";
 
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
-import { findUndoTarget, truncateSessionFile } from "../src/undo.ts";
+import { findUndoTarget, runUndo, truncateSessionFile } from "../src/undo.ts";
 
 const CWD = "/work/project";
 const ID = "01a0aaaa-0000-7000-8000-000000000001";
@@ -181,4 +182,142 @@ test("truncateSessionFile leaves the file untouched for an unknown id", () => {
 	const before = readFileSync(file, "utf8");
 	assert.throws(() => truncateSessionFile(file, "nope"), /Session entry not found: nope/);
 	assert.equal(readFileSync(file, "utf8"), before);
+});
+
+interface FakeOptions {
+	file?: string;
+	idle?: boolean;
+	pending?: boolean;
+	editor?: string;
+	cancelled?: boolean;
+	/** Thrown by `switchSession` itself, before any replacement. */
+	switchError?: Error;
+	/** Make `setEditorText` throw, to exercise a post-replacement failure. */
+	editorError?: Error;
+	sm?: SessionManager;
+}
+
+/** A command context that records what `runUndo` asked the host to do. */
+function fakeCtx(options: FakeOptions) {
+	const notices: string[] = [];
+	const switches: { path: string; bytes: string }[] = [];
+	let editor = options.editor ?? "";
+	const ui = {
+		notify: (message: string) => notices.push(message),
+		getEditorText: () => editor,
+		setEditorText: (text: string) => {
+			if (options.editorError) throw options.editorError;
+			editor = text;
+		},
+	};
+	const ctx = {
+		sessionManager: {
+			getSessionFile: () => options.file,
+			getBranch: () => options.sm?.getBranch() ?? [],
+		},
+		ui,
+		isIdle: () => options.idle ?? true,
+		hasPendingMessages: () => options.pending ?? false,
+		switchSession: async (path: string, switchOptions?: { withSession?: (next: unknown) => Promise<void> }) => {
+			switches.push({ path, bytes: readFileSync(path, "utf8") });
+			if (options.switchError) throw options.switchError;
+			if (options.cancelled) return { cancelled: true };
+			await switchOptions?.withSession?.({ ui });
+			return { cancelled: false };
+		},
+	} as unknown as ExtensionCommandContext;
+	return { ctx, notices, switches, editor: () => editor };
+}
+
+test("runUndo refuses while the agent is busy", async () => {
+	const sm = open([user("u1", null, "first"), assistant("a1", "u1")]);
+	const file = sm.getSessionFile()!;
+	const before = readFileSync(file, "utf8");
+	for (const options of [{ idle: false }, { pending: true }]) {
+		const { ctx, notices, switches } = fakeCtx({ file, sm, ...options });
+		await runUndo(ctx);
+		assert.equal(readFileSync(file, "utf8"), before);
+		assert.equal(switches.length, 0);
+		assert.match(notices[0] ?? "", /finish before/);
+	}
+});
+
+test("runUndo explains when there is nothing to undo", async () => {
+	const sm = open([assistant("a1", "u1")]);
+	const file = sm.getSessionFile()!;
+	const { ctx, notices, switches } = fakeCtx({ file, sm });
+	await runUndo(ctx);
+	assert.equal(switches.length, 0);
+	assert.match(notices[0] ?? "", /No user message to undo/);
+
+	const empty = fakeCtx({});
+	await runUndo(empty.ctx);
+	assert.equal(empty.switches.length, 0);
+	assert.match(empty.notices[0] ?? "", /no saved file/i);
+});
+
+test("runUndo on the first prompt leaves an empty session", async () => {
+	const sm = open([user("u1", null, "only"), assistant("a1", "u1")]);
+	const file = sm.getSessionFile()!;
+	const { ctx, editor, switches } = fakeCtx({ file, sm });
+	await runUndo(ctx);
+	assert.equal(switches.length, 1);
+	assert.equal(SessionManager.open(file).getLeafId(), null);
+	assert.equal(editor(), "only");
+});
+
+test("runUndo truncates, reloads the same file and restores the prompt", async () => {
+	const sm = open([
+		user("u1", null, "first"),
+		assistant("a1", "u1"),
+		user("u2", "a1", "second"),
+		assistant("a2", "u2"),
+	]);
+	const file = sm.getSessionFile()!;
+	const { ctx, notices, switches, editor } = fakeCtx({ file, sm });
+	await runUndo(ctx);
+	assert.equal(switches.length, 1);
+	assert.equal(switches[0]!.path, file);
+	assert.equal(switches[0]!.bytes.includes('"u2"'), false);
+	assert.equal(SessionManager.open(file).getLeafId(), "a1");
+	assert.equal(editor(), "second");
+	assert.match(notices[0] ?? "", /Undone: rewound before your last message \(2 entries removed\)/);
+});
+
+test("runUndo keeps an existing draft in the editor", async () => {
+	const sm = open([user("u1", null, "first"), assistant("a1", "u1")]);
+	const file = sm.getSessionFile()!;
+	const { ctx, notices, editor } = fakeCtx({ file, sm, editor: "draft" });
+	await runUndo(ctx);
+	assert.equal(editor(), "draft");
+	assert.equal(notices.some((notice) => notice.includes("editor kept")), true);
+});
+
+test("runUndo restores the file when the switch is cancelled", async () => {
+	const sm = open([user("u1", null, "first"), assistant("a1", "u1")]);
+	const file = sm.getSessionFile()!;
+	const before = readFileSync(file, "utf8");
+	const { ctx, notices } = fakeCtx({ file, sm, cancelled: true });
+	await runUndo(ctx);
+	assert.equal(readFileSync(file, "utf8"), before);
+	assert.match(notices[0] ?? "", /cancelled/i);
+});
+
+test("runUndo restores the file when the switch throws before replacing", async () => {
+	const sm = open([user("u1", null, "first"), assistant("a1", "u1")]);
+	const file = sm.getSessionFile()!;
+	const before = readFileSync(file, "utf8");
+	const { ctx, notices } = fakeCtx({ file, sm, switchError: new Error("boom") });
+	await runUndo(ctx);
+	assert.equal(readFileSync(file, "utf8"), before);
+	assert.match(notices[0] ?? "", /Undo failed: boom/);
+});
+
+test("runUndo keeps the truncation when only the post-switch step fails", async () => {
+	const sm = open([user("u1", null, "first"), assistant("a1", "u1")]);
+	const file = sm.getSessionFile()!;
+	const { ctx, notices } = fakeCtx({ file, sm, editorError: new Error("no editor") });
+	await runUndo(ctx);
+	assert.equal(SessionManager.open(file).getLeafId(), null);
+	assert.match(notices[0] ?? "", /Undo failed: no editor/);
 });

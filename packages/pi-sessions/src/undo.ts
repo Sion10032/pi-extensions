@@ -9,7 +9,7 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import type { SessionManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 /** Where an undo rewinds to: the parent entry, and the prompt to restore. */
 export interface UndoTarget {
@@ -99,4 +99,69 @@ function writeAtomically(file: string, content: string): void {
 	const tmp = join(dirname(file), `.${basename(file)}.tmp`);
 	writeFileSync(tmp, content);
 	renameSync(tmp, file);
+}
+
+/** A thrown value's message, for a one-line notification. */
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Rewind the current session to just before its newest user message: cut the
+ * tail from the file, reload the session from it, and put the prompt back in
+ * the editor when the editor is empty.
+ *
+ * The cut happens before the reload because the reload reads the file, so a
+ * reload the host refuses has to put the original bytes back. Once the host has
+ * replaced the session the old context is stale and the file is what the new
+ * session already holds, so nothing is restored after that point.
+ */
+export async function runUndo(ctx: ExtensionCommandContext): Promise<void> {
+	if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+		ctx.ui.notify("Wait for the current response to finish before undoing", "warning");
+		return;
+	}
+	const file = ctx.sessionManager.getSessionFile();
+	if (file === undefined) {
+		ctx.ui.notify("This session has no saved file yet", "warning");
+		return;
+	}
+	const target = findUndoTarget(ctx.sessionManager);
+	if (target === undefined) {
+		ctx.ui.notify("No user message to undo", "warning");
+		return;
+	}
+	const editorEmpty = ctx.ui.getEditorText().trim() === "";
+	const original = readFileSync(file, "utf8");
+	let removed = 0;
+	let swapped = false;
+	try {
+		removed = truncateSessionFile(file, target.parentId).removed;
+	} catch (error) {
+		ctx.ui.notify(`Undo failed: ${errorMessage(error)}`, "error");
+		return;
+	}
+	try {
+		const result = await ctx.switchSession(file, {
+			withSession: async (next) => {
+				swapped = true;
+				try {
+					if (editorEmpty) next.ui.setEditorText(target.text);
+					else next.ui.notify("Undo: editor kept as-is, prompt not restored", "warning");
+					next.ui.notify(`Undone: rewound before your last message (${removed} entries removed)`, "info");
+				} catch (error) {
+					next.ui.notify(`Undo failed: ${errorMessage(error)}`, "error");
+				}
+			},
+		});
+		if (result.cancelled && !swapped) {
+			writeAtomically(file, original);
+			ctx.ui.notify("Undo cancelled, session unchanged", "warning");
+		}
+	} catch (error) {
+		if (!swapped) {
+			writeAtomically(file, original);
+			ctx.ui.notify(`Undo failed: ${errorMessage(error)}`, "error");
+		}
+	}
 }
