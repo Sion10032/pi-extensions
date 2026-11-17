@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, test } from "node:test";
 
+import { archiveSessionFile } from "../src/archive.ts";
 import { deleteSessionFile, defaultDeleteOps, trashArgs } from "../src/delete.ts";
-import { cwdDirName, sessionsRoot } from "../src/paths.ts";
+import { archiveRoot, cwdDirName, sessionsRoot } from "../src/paths.ts";
+import { readIndex, readPending, setPending, writeIndex } from "../src/state.ts";
 
 const CWD = "/work/project";
 const ID = "01a0aaaa-0000-7000-8000-000000000001";
@@ -85,4 +87,36 @@ test("a symlink inside a companion directory is not followed", () => {
 test("trash receives -- before paths so a leading dash is not a flag", () => {
 	assert.deepEqual(trashArgs(["-rf.jsonl", "b.jsonl"]), ["--", "-rf.jsonl", "b.jsonl"]);
 	assert.equal(typeof defaultDeleteOps().trash, "function");
+});
+
+/** A trash that really removes: returning true without deleting would make
+ * `deleted` a lie and the assertions below meaningless. */
+const fakeTrash = (paths: string[]): boolean => {
+	for (const path of paths) rmSync(path, { force: true });
+	return true;
+};
+
+test("deletes the twin in the archive tree and both index entries", () => {
+	const parent = seedTree();
+	archiveSessionFile(parent); // 归档父会话与其子树
+	const archived = join(archiveRoot(), cwdDirName(CWD), file(ID));
+	// 归档后 pi 又写了活跃副本：两棵树各有一份
+	writeFileSync(parent, `${header(ID)}\n`);
+	writeFileSync(join(live, file(CHILD)), `${header(CHILD, parent)}\n`);
+	writeIndex({ ...readIndex(), [`${cwdDirName(CWD)}/${file(OTHER)}`]: { name: "", cwd: "OTHER", archivedAt: "x" } });
+
+	const result = deleteSessionFile(parent, { ops: { trash: fakeTrash } });
+	assert.equal(result.refused, false);
+	assert.equal(existsSync(parent), false);
+	assert.equal(existsSync(archived), false);
+	assert.equal(existsSync(join(archiveRoot(), cwdDirName(CWD), file(CHILD))), false);
+	// 只摘掉被删会话的键，其他条目保留
+	assert.deepEqual(Object.keys(readIndex()), [`${cwdDirName(CWD)}/${file(OTHER)}`]);
+});
+
+test("clears a pending archive for a deleted session", () => {
+	const parent = seedTree();
+	setPending(ID, { path: parent, cwd: CWD, requestedAt: "2026-01-01T00:00:00.000Z" });
+	deleteSessionFile(parent, { ops: { trash: fakeTrash } });
+	assert.deepEqual(readPending(), {});
 });

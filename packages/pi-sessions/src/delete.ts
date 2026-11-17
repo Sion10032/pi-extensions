@@ -18,7 +18,8 @@ import { existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import { descendantFiles, findCompanions } from "./archive.ts";
-import { twinPaths } from "./paths.ts";
+import { archiveRoot, sessionIdFromFile, twinPaths, underRoot } from "./paths.ts";
+import { clearPending, readIndex, writeIndex } from "./state.ts";
 
 /** The two filesystem operations a delete needs; injectable for tests. */
 export interface DeleteOps {
@@ -149,5 +150,22 @@ export function deleteSessionFile(file: string, options: DeleteOptions = {}): De
 			failed.push(path);
 		}
 	}
+
+	// The archive metadata follows the files: an index entry that names a deleted
+	// file would keep a phantom archive alive. Only the removed keys are written
+	// back, so a corrupt (empty-read) index is left untouched.
+	const index = readIndex();
+	let indexChanged = false;
+	for (const path of deleted) {
+		if (!path.endsWith(".jsonl")) continue;
+		const key = underRoot(archiveRoot(), path);
+		if (key !== undefined && key in index) {
+			delete index[key];
+			indexChanged = true;
+		}
+		clearPending(sessionIdFromFile(path));
+	}
+	if (indexChanged) writeIndex(index);
+
 	return { deleted, failed, refused: false };
 }
