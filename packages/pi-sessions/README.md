@@ -59,7 +59,7 @@ pi -e ./packages/pi-sessions
 | 键 | 行为 |
 | --- | --- |
 | `tab` | 切换作用域：`current`（当前目录）↔ `all`（所有目录） |
-| `ctrl+s` | 切换排序：`threaded` → `recent` → `relevance` |
+| `ctrl+s` | 切换排序：`threaded` → `recent` → `relevance`；只在树内重排，子会话仍默认折叠 |
 | `ctrl+n` | 只看命名会话，再按一次显示全部 |
 | `ctrl+p` | 显示/隐藏会话文件路径 |
 | `ctrl+t` | 切换归档筛选：`active` → `archived` → `all` |
@@ -74,7 +74,9 @@ pi -e ./packages/pi-sessions
 说明：
 
 - 默认状态为 `scope: current`、`sort: threaded`、归档筛选 `active`、`named: All`、`path: off`；当前会话高亮，归档行带暗色 `[archived]`。
-- 有过滤词、或排序不是 `threaded` 时，列表退化为扁平结果列表（与原生 picker 一致）。
+- 标题栏与原生会话选择器一致：`Sessions (Current Folder)` / `Sessions (All)`，`> ` 过滤框，选中行高亮，命名会话用 warning 色，当前会话用 accent 色。
+- 有过滤词时，列表退化为扁平结果列表（与原生 picker 一致）；没有过滤词时，无论切换哪种排序，子会话都保持嵌套并默认折叠。
+- 折叠时父行右侧显示 `↳N` 后代数（即使标题很长也不会被截掉）；展开后子行使用原生 `├─` / `└─` 树形前缀。
 - 带派生会话的会话在归档前会先显示确认行：`Archive <标题> and N child sessions? enter confirm · esc cancel`；取消归档不需要确认。
 - `tab`、`ctrl+s`、`ctrl+n`、`ctrl+p` 使用 pi 的键位名 `tui.input.tab`、`app.session.toggleSort`、`app.session.toggleNamedFilter`、`app.session.togglePath`，可在 `~/.pi/agent/keybindings.json` 里改；`ctrl+t`、`ctrl+e`、`ctrl+a` 是本插件直接读取的按键，不可改。
 

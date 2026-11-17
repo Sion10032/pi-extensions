@@ -55,6 +55,39 @@ test("ctrl+e expands the selected parent and rerenders children", () => {
 	assert.match(picker.render(80).join("\n"), /kid/);
 });
 
+test("a long title keeps the descendant badge visible", () => {
+	const long = rec("/w/long.jsonl", { firstMessage: "x".repeat(200), allMessagesText: "x" });
+	const kid = rec("/w/kid.jsonl", { name: "kid", parentSessionPath: "/w/long.jsonl" });
+	const { picker } = makePicker([long, kid], undefined);
+	const line = picker.render(60).find((candidate) => candidate.includes("xxxx"));
+	assert.ok(line);
+	assert.match(line, /↳1/);
+});
+
+test("expanded children use the native tree prefix", () => {
+	const { picker } = makePicker([parent, child], parent.info.path);
+	picker.handleInput("\u0005");
+	const kidLine = picker.render(80).find((line) => line.includes("kid"));
+	assert.ok(kidLine);
+	assert.match(kidLine, /(?:├─|└─) kid/);
+	assert.doesNotMatch(kidLine, /│\s+(?:├─|└─)/);
+});
+
+test("changing the sort keeps child sessions collapsed", () => {
+	const { picker } = makePicker([parent, child], parent.info.path);
+	picker.handleInput("\u0013"); // ctrl+s: threaded -> recent
+	const text = picker.render(80).join("\n");
+	assert.match(text, /↳1/);
+	assert.doesNotMatch(text, /kid/);
+});
+
+test("the header uses the native scope title and filter prompt", () => {
+	const { picker } = makePicker([parent], undefined);
+	const text = picker.render(80).join("\n");
+	assert.match(text, /Sessions \(Current Folder\)/);
+	assert.match(text, /^> /m);
+});
+
 test("typing filters and enter resumes the selection", () => {
 	const { picker, state, calls } = makePicker([parent, child], undefined);
 	picker.handleInput("kid");

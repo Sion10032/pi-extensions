@@ -200,8 +200,8 @@ interface SubtreeStats {
 	latest: number;
 }
 
-/** Build the nested forest: roots by subtree activity, children only when expanded. */
-function forest(ordered: SessionRecord[], expand: ReadonlySet<string>): TreeRow[] {
+/** Build the nested forest: roots by the active sort, children only when expanded. */
+function forest(ordered: SessionRecord[], expand: ReadonlySet<string>, sort: SortMode): TreeRow[] {
 	const byPath = new Map<string, SessionRecord>();
 	for (const record of ordered) byPath.set(resolve(record.info.path), record);
 
@@ -246,6 +246,11 @@ function forest(ordered: SessionRecord[], expand: ReadonlySet<string>): TreeRow[
 	const latestOf = (record: SessionRecord): number =>
 		stats.get(record)?.latest ?? record.info.modified.getTime();
 	const byLatest = (a: SessionRecord, b: SessionRecord): number => latestOf(b) - latestOf(a);
+	const byModified = (a: SessionRecord, b: SessionRecord): number =>
+		b.info.modified.getTime() - a.info.modified.getTime();
+	// Threaded order is by subtree activity; recent/relevance keep each sibling
+	// level in the order `sortRecords` already produced.
+	const compare = sort === "threaded" ? byLatest : byModified;
 
 	const rows: TreeRow[] = [];
 	const emitted = new Set<SessionRecord>();
@@ -261,13 +266,18 @@ function forest(ordered: SessionRecord[], expand: ReadonlySet<string>): TreeRow[
 			ancestorContinues,
 		});
 		if (!expand.has(record.info.path)) return;
-		const kids = [...(children.get(record) ?? [])].sort(byLatest);
+		const kids = [...(children.get(record) ?? [])].sort(compare);
 		for (const [index, child] of kids.entries()) {
-			emit(child, depth + 1, index === kids.length - 1, [...ancestorContinues, !isLast]);
+			// Native flattenSessionTree only draws a continuation column below
+			// depth 0; a root's own isLast must not leak into its children.
+			emit(child, depth + 1, index === kids.length - 1, [
+				...ancestorContinues,
+				depth > 0 ? !isLast : false,
+			]);
 		}
 	}
 
-	const orderedRoots = [...roots].sort(byLatest);
+	const orderedRoots = [...roots].sort(compare);
 	// A chain that loops back on itself never reaches a root: keep those
 	// sessions visible as roots of their own instead of silently dropping them.
 	const reached = new Set<SessionRecord>();
@@ -288,9 +298,9 @@ function forest(ordered: SessionRecord[], expand: ReadonlySet<string>): TreeRow[
 }
 
 /**
- * Rows for the picker. Threaded order without a query nests child sessions
- * under their parent and collapses them, unless the parent is in `expand`;
- * every other combination is a flat, already sorted list.
+ * Rows for the picker. Without a query the child sessions stay nested under
+ * their parent and collapsed, regardless of the sort mode; the sort only
+ * reorders each sibling level. A query flattens the list into search results.
  */
 export function buildRows(
 	records: SessionRecord[],
@@ -298,7 +308,7 @@ export function buildRows(
 ): TreeRow[] {
 	const { query, sort, expand } = options;
 	const ordered = sortRecords(records, query, sort);
-	if (!query.empty || sort !== "threaded") {
+	if (!query.empty) {
 		return ordered.map((record) => ({
 			record,
 			depth: 0,
@@ -307,5 +317,5 @@ export function buildRows(
 			ancestorContinues: [],
 		}));
 	}
-	return forest(ordered, expand);
+	return forest(ordered, expand, sort);
 }

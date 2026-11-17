@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-tui";
 
 import { displayTitle, relativeTime } from "./paths.ts";
+import { hasName } from "./search.ts";
 import type { PickerState } from "./picker-state.ts";
 import type { TreeRow } from "./sessions.ts";
 import type { Scope, SessionRecord } from "./types.ts";
@@ -31,8 +32,8 @@ const ARCHIVE_FILTER_KEY = "\u0014"; // ctrl+t
 const EXPAND_KEY = "\u0005"; // ctrl+e
 const ARCHIVE_KEY = "\u0001"; // ctrl+a
 
-const FOOTER_LINE_1 = "type to filter · tab scope · ctrl+t filter · ctrl+s sort · ctrl+n named";
-const FOOTER_LINE_2 = "ctrl+p path · ctrl+e expand · ctrl+a archive · enter resume · esc cancel";
+const HINT_LINE_1 = 'tab scope · re:<pattern> regex · "phrase" exact';
+const FOOTER_LINE = "ctrl+e expand · ctrl+a archive · enter resume · esc cancel";
 
 /** A pending archive, waiting for Enter to confirm. */
 interface Confirmation {
@@ -93,7 +94,7 @@ export class SessionPicker implements Component {
 
 	constructor(props: SessionPickerProps) {
 		this.props = props;
-		this.input = new Input({ prompt: "filter: " });
+		this.input = new Input({ prompt: "> " });
 	}
 
 	handleInput(data: string): void {
@@ -218,7 +219,14 @@ export class SessionPicker implements Component {
 			: -1;
 
 		if (rows.length === 0) {
-			lines.push(theme.fg("dim", truncateToWidth("  No sessions match the current filter.", safeWidth, "…")));
+			const empty = this.props.state.query.trim() !== ""
+				|| state.archiveFilter !== "active"
+				|| state.namedOnly
+				? "No sessions match the current filter."
+				: state.scope === "current"
+					? "No sessions in current folder. Press Tab to view all."
+					: "No sessions found.";
+			lines.push(theme.fg("dim", truncateToWidth(`  ${empty}`, safeWidth, "…")));
 		} else {
 			for (const [offset, row] of this.visibleRows.entries()) {
 				lines.push(this.renderRow(row, selectedIndex === start + offset, safeWidth));
@@ -237,8 +245,7 @@ export class SessionPicker implements Component {
 			const prompt = `Archive ${title} and ${this.confirming.children} child sessions? enter confirm · esc cancel`;
 			lines.push(theme.fg("accent", truncateToWidth(prompt, safeWidth, "…")));
 		} else {
-			lines.push(theme.fg("dim", truncateToWidth(FOOTER_LINE_1, safeWidth, "…")));
-			lines.push(theme.fg("dim", truncateToWidth(FOOTER_LINE_2, safeWidth, "…")));
+			lines.push(theme.fg("dim", truncateToWidth(FOOTER_LINE, safeWidth, "…")));
 		}
 		return lines;
 	}
@@ -273,40 +280,52 @@ export class SessionPicker implements Component {
 	private renderHeader(width: number): string[] {
 		const { state, theme } = this.props;
 		const counts = state.counts;
-		const title = theme.bold("Sessions");
+		const title = theme.bold(`Sessions (${scopeLabel(state)})`);
 		const right = theme.fg(
 			"dim",
 			`Showing: ${archiveFilterLabel(state)} · ${counts.active} active / ${counts.archived} archived`,
 		);
 		const gap = Math.max(1, width - visibleWidth(title) - visibleWidth(right));
-		const summary = theme.fg(
-			"dim",
-			`scope: ${scopeLabel(state)} · sort: ${sortLabel(state)} · named: ${state.namedOnly ? "Named" : "All"} · path: ${state.showPath ? "on" : "off"}`,
-		);
+		const controls = [
+			`ctrl+s sort (${sortLabel(state)})`,
+			`ctrl+n named (${state.namedOnly ? "Named" : "All"})`,
+			`ctrl+t filter (${archiveFilterLabel(state)})`,
+			`ctrl+p path (${state.showPath ? "on" : "off"})`,
+		].join(" · ");
 		return [
 			truncateToWidth(`${title}${" ".repeat(gap)}${right}`, width, ""),
-			truncateToWidth(summary, width, "…"),
+			theme.fg("dim", truncateToWidth(HINT_LINE_1, width, "…")),
+			theme.fg("dim", truncateToWidth(controls, width, "…")),
 		];
 	}
 
 	private renderRow(row: TreeRow, selected: boolean, width: number): string {
 		const { state, theme } = this.props;
 		const { info } = row.record;
-		let label = displayTitle(info);
-		if (row.descendantCount > 0) label += ` ↳${row.descendantCount}`;
-		if (row.record.archived) label += theme.fg("dim", " [archived]");
-		if (state.isCurrent(row.record)) label = theme.fg("accent", label);
-		if (selected) label = theme.bold(label);
-
 		const cursor = selected ? theme.fg("accent", "› ") : "  ";
-		const left = `${cursor}${theme.fg("dim", treePrefix(row))}${label}`;
-		const rightParts = [
-			String(info.messageCount),
-			relativeTime(row.record.archived ? row.record.archiveDate : info.modified),
-		];
+		const prefix = theme.fg("dim", treePrefix(row));
+
+		// Count and metadata live on the right so a long title can never hide
+		// the `↳N` badge that tells the user the row has children.
+		const rightParts: string[] = [];
+		if (row.record.archived) rightParts.push("[archived]");
+		if (row.descendantCount > 0) rightParts.push(`↳${row.descendantCount}`);
 		if (state.showPath) rightParts.unshift(info.path);
+		rightParts.push(String(info.messageCount));
+		rightParts.push(relativeTime(row.record.archived ? row.record.archiveDate : info.modified));
 		const right = theme.fg("dim", rightParts.join("  "));
+
+		const leftWidth = visibleWidth(cursor) + visibleWidth(prefix);
+		const available = Math.max(10, width - leftWidth - visibleWidth(right) - 2);
+		let message = truncateToWidth(displayTitle(info), available, "…");
+		const color = state.isCurrent(row.record) ? "accent" : hasName(info) ? "warning" : undefined;
+		if (color !== undefined) message = theme.fg(color, message);
+		if (selected) message = theme.bold(message);
+
+		const left = `${cursor}${prefix}${message}`;
 		const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
-		return truncateToWidth(`${left}${" ".repeat(gap)}${right}`, width, "…");
+		let line = `${left}${" ".repeat(gap)}${right}`;
+		if (selected) line = theme.bg("selectedBg", line);
+		return truncateToWidth(line, width);
 	}
 }

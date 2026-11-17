@@ -206,7 +206,7 @@ test("the TUI picker still opens when the current folder has no sessions", async
 	// No early "nothing to show" return, so `tab` can still reload the all scope.
 	assert.equal(renders, 1);
 	assert.deepEqual(notices, []);
-	assert.match(rendered, /No sessions match/);
+	assert.match(rendered, /No sessions in current folder/);
 });
 
 test("the TUI picker applies the archive filter argument", async () => {
@@ -219,7 +219,7 @@ test("the TUI picker applies the archive filter argument", async () => {
 	const active = fakeCtx({ mode: "tui", onPicker: (text) => { rendered = text; } });
 	await runSessions({} as ExtensionAPI, active.ctx, "");
 	assert.doesNotMatch(rendered, /\[archived\]/);
-	assert.match(rendered, /No sessions match/);
+	assert.match(rendered, /No sessions in current folder/);
 
 	const archived = fakeCtx({ mode: "tui", onPicker: (text) => { rendered = text; } });
 	await runSessions({} as ExtensionAPI, archived.ctx, "archived");

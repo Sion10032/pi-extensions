@@ -13,6 +13,7 @@ import { writeIndex } from "../src/state.ts";
 const CWD = "/work/project";
 const ID = "01a0aaaa-0000-7000-8000-000000000001";
 const CHILD = "01a0bbbb-0000-7000-8000-000000000002";
+const OTHER = "01a0cccc-0000-7000-8000-000000000003";
 const header = (id: string, parent?: string, name?: string) =>
 	[
 		JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd: CWD, ...(parent ? { parentSession: parent } : {}) }),
@@ -120,4 +121,28 @@ test("a query produces a flat list", async () => {
 	const rows = buildRows(records, { query: parseQuery("kid"), sort: "relevance", expand: new Set() });
 	assert.equal(rows.length, 1);
 	assert.equal(rows[0].depth, 0);
+});
+
+test("recent sort keeps children nested and collapsed", async () => {
+	const { parent } = seed();
+	const records = await loadSessions("current", CWD);
+	const collapsed = buildRows(records, { query: parseQuery(""), sort: "recent", expand: new Set() });
+	assert.equal(collapsed.length, 1);
+	assert.equal(collapsed[0].descendantCount, 1);
+	const expanded = buildRows(records, { query: parseQuery(""), sort: "recent", expand: new Set([parent]) });
+	assert.equal(expanded.length, 2);
+	assert.equal(expanded[1].depth, 1);
+});
+
+test("a child of a non-last root is indented, not drawn in a continuation column", async () => {
+	const { parent, child } = seed();
+	const other = join(live, `c_${OTHER}.jsonl`);
+	writeFileSync(other, `${header(OTHER, undefined, "other").join("\n")}\n`);
+	const records = await loadSessions("current", CWD);
+	const rows = buildRows(records, { query: parseQuery(""), sort: "threaded", expand: new Set([parent]) });
+	const childRow = rows.find((row) => row.record.info.path === child);
+	assert.ok(childRow);
+	// Native flattenSessionTree appends `false` for a child of a depth-0 root;
+	// the renderer turns that into spaces, never a `│  ` column.
+	assert.deepEqual(childRow.ancestorContinues, [false]);
 });
