@@ -98,9 +98,33 @@ test("changing the sort keeps child sessions collapsed", () => {
 
 test("the header uses the native scope title and filter prompt", () => {
 	const { picker } = makePicker([parent], undefined);
-	const text = picker.render(80).join("\n");
+	const text = picker.render(120).join("\n");
 	assert.match(text, /Sessions \(Current Folder\)/);
+	assert.match(text, /◉ Current Folder/);
+	assert.match(text, /Name: All/);
+	assert.match(text, /Sort: Threaded/);
+	assert.match(text, /Filter: Active/);
+	assert.doesNotMatch(text, /Showing:/);
 	assert.match(text, /^> /m);
+});
+
+test("the confirmation prompt replaces the header hints", () => {
+	const { picker } = makePicker([parent], parent.info.path);
+	picker.handleInput("\u0001");
+	const lines = picker.render(80);
+	const promptIndex = lines.findIndex((line) => line.includes("Archive the current session"));
+	const inputIndex = lines.findIndex((line) => line.trimStart().startsWith(">"));
+	assert.ok(promptIndex >= 0);
+	assert.ok(inputIndex > promptIndex);
+	assert.doesNotMatch(lines.join("\n"), /ctrl\+s sort/);
+});
+
+test("ctrl+c cancels a pending confirmation", () => {
+	const { picker, calls } = makePicker([parent], parent.info.path);
+	picker.handleInput("\u0001");
+	picker.handleInput("\u0003"); // ctrl+c
+	assert.deepEqual(calls, []);
+	assert.doesNotMatch(picker.render(80).join("\n"), /enter confirm/);
 });
 
 test("typing filters and enter resumes the selection", () => {

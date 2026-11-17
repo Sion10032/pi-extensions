@@ -28,7 +28,6 @@ import type { Scope, SessionRecord } from "./types.ts";
 /** Rows rendered at once, matching the native session picker. */
 const MAX_VISIBLE = 10;
 
-const HINT_LINE_1 = 'tab scope · re:<pattern> regex · "phrase" exact';
 const FOOTER_LINE = "ctrl+e expand · ctrl+a archive · enter resume · esc cancel";
 
 /** A pending archive action, waiting for Enter to confirm. */
@@ -104,7 +103,7 @@ export class SessionPicker implements Component {
 				const { record } = this.confirming;
 				this.confirming = undefined;
 				this.props.onToggleArchive(record);
-			} else if (kb.matches(data, "tui.select.cancel")) {
+			} else if (kb.matches(data, "tui.select.cancel") || matchesKey(data, "ctrl+c")) {
 				this.confirming = undefined;
 			}
 			tui.requestRender();
@@ -238,11 +237,6 @@ export class SessionPicker implements Component {
 		}
 
 		lines.push("");
-		if (this.confirming !== undefined) {
-			lines.push(theme.fg("accent", truncateToWidth(this.confirmationPrompt(), safeWidth, "…")));
-		} else {
-			lines.push(theme.fg("dim", truncateToWidth(FOOTER_LINE, safeWidth, "…")));
-		}
 		return lines;
 	}
 
@@ -270,32 +264,52 @@ export class SessionPicker implements Component {
 	private confirmationPrompt(): string {
 		const { action, children } = this.confirming!;
 		if (action === "deferred-archive") {
-			return "Archive the current session when it closes? enter confirm · esc cancel";
+			return "Archive the current session when it closes? enter confirm · esc/ctrl+c cancel";
 		}
 		const verb = action === "unarchive" ? "Unarchive" : "Archive";
 		const scope = children > 0 ? ` this session and ${children} child sessions?` : " this session?";
-		return `${verb}${scope} enter confirm · esc cancel`;
+		return `${verb}${scope} enter confirm · esc/ctrl+c cancel`;
 	}
 
 	private renderHeader(width: number): string[] {
 		const { state, theme } = this.props;
-		const counts = state.counts;
 		const title = theme.bold(`Sessions (${scopeLabel(state)})`);
-		const right = theme.fg(
-			"dim",
-			`Showing: ${archiveFilterLabel(state)} · ${counts.active} active / ${counts.archived} archived`,
-		);
-		const gap = Math.max(1, width - visibleWidth(title) - visibleWidth(right));
-		const controls = [
-			`ctrl+s sort (${sortLabel(state)})`,
-			`ctrl+n named (${state.namedOnly ? "Named" : "All"})`,
-			`ctrl+t filter (${archiveFilterLabel(state)})`,
-			`ctrl+p path (${state.showPath ? "on" : "off"})`,
-		].join(" · ");
+		const scope = state.scope === "current"
+			? `${theme.fg("accent", "◉ Current Folder")}${theme.fg("muted", " | ○ All")}`
+			: `${theme.fg("muted", "○ Current Folder | ")}${theme.fg("accent", "◉ All")}`;
+		const name = `${theme.fg("muted", "Name: ")}${theme.fg("accent", state.namedOnly ? "Named" : "All")}`;
+		const sort = `${theme.fg("muted", "Sort: ")}${theme.fg("accent", sortLabel(state))}`;
+		const filter = `${theme.fg("muted", "Filter: ")}${theme.fg("accent", archiveFilterLabel(state))}`;
+		const right = truncateToWidth(`${scope}  ${name}  ${sort}  ${filter}`, width, "");
+		const availableLeft = Math.max(0, width - visibleWidth(right) - 1);
+		const left = truncateToWidth(title, availableLeft, "");
+		const spacing = Math.max(0, width - visibleWidth(left) - visibleWidth(right));
+		const titleLine = `${left}${" ".repeat(spacing)}${right}`;
+
+		if (this.confirming !== undefined) {
+			return [
+				titleLine,
+				theme.fg("error", truncateToWidth(this.confirmationPrompt(), width, "…")),
+				"",
+			];
+		}
+
+		const sep = theme.fg("muted", " · ");
+		const keyHint = (key: string, label: string): string =>
+			`${theme.fg("accent", key)} ${theme.fg("muted", label)}`;
+		const hint1 = `${keyHint("tab", "scope")}${sep}${theme.fg("muted", 're:<pattern> regex · "phrase" exact')}`;
+		const hint2 = [
+			keyHint("ctrl+s", "sort"),
+			keyHint("ctrl+n", "named"),
+			keyHint("ctrl+t", "filter"),
+			keyHint("ctrl+e", "expand"),
+			keyHint("ctrl+a", "archive"),
+			keyHint("ctrl+p", `path (${state.showPath ? "on" : "off"})`),
+		].join(sep);
 		return [
-			truncateToWidth(`${title}${" ".repeat(gap)}${right}`, width, ""),
-			theme.fg("dim", truncateToWidth(HINT_LINE_1, width, "…")),
-			theme.fg("dim", truncateToWidth(controls, width, "…")),
+			titleLine,
+			truncateToWidth(hint1, width, "…"),
+			truncateToWidth(hint2, width, "…"),
 		];
 	}
 
