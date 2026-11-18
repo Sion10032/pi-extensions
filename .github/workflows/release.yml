@@ -1,0 +1,135 @@
+# Publish one workspace package to npm on a per-package version tag.
+#
+#   pi-sessions-v0.1.1  ->  packages/pi-sessions @ 0.1.1
+#
+# The tag names the package directory, so adding a package needs no change here:
+# tag it pi-<packages dir>-v<version> once the package exists.
+#
+# Auth is npm trusted publishing (OIDC): no token, no secret in this file. Provenance
+# is generated automatically on public repos. Before this workflow can publish a
+# package, two one-time maintainer steps are required:
+#   1. Publish the package once with a token so it exists on npmjs.com.
+#   2. On npmjs.com -> the package -> Settings -> Trusted publishing, add
+#        Organization/user: Sion10032
+#        Repository:        pi-extensions
+#        Workflow filename: release.yml
+#      and allow `npm publish` (connections created after 2026-09-03 only allow
+#      `npm stage publish` until you tick it). A new connection must complete its
+#      first successful publish within 2 days or it expires.
+# Until step 2 is done for a package, a tag for it fails at the publish step.
+name: release
+
+on:
+  push:
+    tags:
+      - "pi-*-v*"
+
+permissions:
+  contents: read
+  id-token: write # OIDC for npm trusted publishing + provenance
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Derive the package directory and version from the tag, before anything is
+      # installed: a malformed tag or a missing package fails here, not halfway.
+      - name: Resolve the package from the tag
+        id: pkg
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          case "$tag" in
+            pi-*-v*) ;;
+            *) echo "::error::tag $tag is not of the form pi-<package>-v<version>"; exit 1 ;;
+          esac
+          dir="packages/${tag%-v*}"
+          version="${tag##*-v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::tag $tag does not carry a semver version (got '$version')"
+            exit 1
+          fi
+          if [ ! -f "$dir/package.json" ]; then
+            echo "::error::no package at $dir for tag $tag"
+            exit 1
+          fi
+          printf 'dir=%s\nversion=%s\n' "$dir" "$version" >> "$GITHUB_OUTPUT"
+          echo "resolved $tag -> $dir @ $version"
+
+      # Tag pushes run the workflow file from the tagged commit, so tag protection is
+      # the primary control; this check keeps an unreviewed branch from being published.
+      - name: Check the tagged commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on origin/main"
+            exit 1
+          fi
+          echo "$GITHUB_SHA is on origin/main"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      # Trusted publishing needs npm >= 11.5.1. Pin it: do not float npm@latest in a
+      # job that holds id-token: write and publish rights.
+      - name: Pin npm for trusted publishing
+        run: npm install --global npm@11.5.1 && npm --version
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - name: Check the tag version matches package.json
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        env:
+          TAG_VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if [ "$version" != "$TAG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME says $TAG_VERSION but $name package.json says $version"
+            exit 1
+          fi
+          echo "publishing $name@$version"
+
+      - name: Show the tarball contents
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm pack --dry-run
+
+      # Re-runs and "publish by hand, tag afterwards" both land here: skip instead of
+      # failing, because npm refuses to publish over an existing version anyway.
+      - name: Check whether the version is already published
+        id: published
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        env:
+          TAG_VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          if npm view "$name@$TAG_VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$name@$TAG_VERSION is already published, nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.published.outputs.skip == 'false'
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm publish --access public --provenance
