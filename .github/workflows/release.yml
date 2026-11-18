@@ -146,13 +146,12 @@ jobs:
           PACKAGE_DIR: ${{ steps.pkg.outputs.dir }}
         run: |
           set -euo pipefail
+          set -x # temporary: traces every command so a failure names itself
           tag="$GITHUB_REF_NAME"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "::notice::release $tag already exists, nothing to do"
             exit 0
           fi
-
-          git fetch --quiet --tags origin
 
           # The previous tag of this same package, so two packages never share a range.
           previous=""
@@ -178,6 +177,10 @@ jobs:
               echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$previous...$tag"
             fi
           } > /tmp/notes.md
+
+          echo '--- release notes ---'
+          cat /tmp/notes.md
+          echo '--- end of notes ---'
 
           args=(--verify-tag --title "$tag" --notes-file /tmp/notes.md)
           case "$VERSION" in
