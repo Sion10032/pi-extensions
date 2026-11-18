@@ -1,6 +1,6 @@
 {
 	"name": "@sion10032/pi-sessions",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Browse, archive, restore and resume pi sessions, including their subagent sessions",
 	"keywords": ["pi-package", "pi-extension", "session", "archive", "resume"],
 	"license": "MIT",
