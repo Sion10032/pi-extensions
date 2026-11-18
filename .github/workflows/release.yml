@@ -1,6 +1,7 @@
-# Publish one workspace package to npm on a per-package version tag.
+# Publish one workspace package to npm on a per-package version tag, then create the
+# matching GitHub release with auto-generated notes.
 #
-#   pi-sessions-v0.1.1  ->  packages/pi-sessions @ 0.1.1
+#   pi-sessions-v0.1.1  ->  packages/pi-sessions @ 0.1.1 + GitHub release
 #
 # The tag names the package directory, so adding a package needs no change here:
 # tag it pi-<packages dir>-v<version> once the package exists.
@@ -25,7 +26,7 @@ on:
       - "pi-*-v*"
 
 permissions:
-  contents: read
+  contents: write # create the GitHub release; the publish below only reads the tree
   id-token: write # OIDC for npm trusted publishing + provenance
 
 concurrency:
@@ -133,3 +134,53 @@ jobs:
         if: steps.published.outputs.skip == 'false'
         working-directory: ${{ steps.pkg.outputs.dir }}
         run: npm publish --access public --provenance
+
+      # Runs even when the publish was skipped, so a release step that failed on its
+      # own can be retried by re-running the job. GitHub's generated notes cannot be
+      # filtered by path, so build them here: the commits touching this package since
+      # this package's previous tag (notes stay per package, not repo-wide).
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+          PACKAGE_DIR: ${{ steps.pkg.outputs.dir }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::notice::release $tag already exists, nothing to do"
+            exit 0
+          fi
+
+          git fetch --quiet --tags origin
+
+          # The previous tag of this same package, so two packages never share a range.
+          previous=""
+          if prev=$(git describe --tags --abbrev=0 --match "${PACKAGE_DIR#packages/}-v*" "$GITHUB_SHA^" 2>/dev/null); then
+            previous="$prev"
+            range="$previous..$GITHUB_SHA"
+          else
+            range="$GITHUB_SHA"
+          fi
+
+          {
+            if [ -n "$previous" ]; then
+              echo "Commits to \`$PACKAGE_DIR\` since \`$previous\`:"
+            else
+              echo "First release: every commit to \`$PACKAGE_DIR\`:"
+            fi
+            echo
+            git log "$range" --no-merges \
+              --format="- %s ([%h](https://github.com/$GITHUB_REPOSITORY/commit/%H))" \
+              -- "$PACKAGE_DIR"
+            if [ -n "$previous" ]; then
+              echo
+              echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$previous...$tag"
+            fi
+          } > /tmp/notes.md
+
+          args=(--verify-tag --title "$tag" --notes-file /tmp/notes.md)
+          case "$VERSION" in
+            *-*) args+=(--prerelease) ;;
+          esac
+          gh release create "$tag" "${args[@]}"
